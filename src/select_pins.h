@@ -1,4 +1,4 @@
-// Camera pin definitions (primary / preferred set)
+// Camera
 #define PWDN_GPIO_NUM    -1
 #define RESET_GPIO_NUM   18
 #define XCLK_GPIO_NUM    14
@@ -17,7 +17,7 @@
 #define HREF_GPIO_NUM    7
 #define PCLK_GPIO_NUM    13
 
-// Power / PCIe / misc
+// Power / PCIe
 #define PWR_ON_PIN       1
 #define PCIE_PWR_PIN     48
 #define PCIE_RST_PIN     48
@@ -25,23 +25,32 @@
 #define PCIE_RX_PIN      46
 #define PCIE_LED_PIN     21
 
-// SD / SPI pins (if used; leave as board-specific defines)
+// SD
 #define SD_MISO_PIN      40
 #define SD_MOSI_PIN      38
 #define SD_SCLK_PIN      39
 #define SD_CS_PIN        47
 
-// Microphone / audio pins
+// Microphone
 #define MIC_IIS_WS_PIN   42
 #define MIC_IIS_SCK_PIN  41
 #define MIC_IIS_DATA_PIN 2
 
-// Other convenience defines (single set)
+// Other
 #define BUTTON_PIN       0
 #define BAT_VOLT_PIN     -1
 
-#define SDA_PIN 43  // Grove RX (cerveny kábel)
-#define SCL_PIN 44  // Grove TX (biely kábel)
+// Groove to MCP23017 I2C Pins
+#define SDA_PIN 43      // Grove RX (cerveny kábel)
+#define SCL_PIN 44      // Grove TX (biely kábel)
+
+// MCP23017 Pins
+#define MCP_ADDRESS 0x20
+
+#define MCP_PIR_PIN 2   // GPA2 na MCP23017 (kam pripojíš PIR výstup)
+
+#define MCP_SDA_PIN 0   // GPA0 na MCP23017 (SDA pre DS3231)
+#define MCP_SCL_PIN 1   // GPA1 na MCP23017 (SCL pre DS3231)
 
 // Compatibility: if other code uses CAM_* names, map them to the standard names
 #ifndef CAM_PWDN_PIN
