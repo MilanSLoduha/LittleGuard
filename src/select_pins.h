@@ -52,6 +52,16 @@
 #define MCP_SDA_PIN 0   // GPA0 na MCP23017 (SDA pre DS3231)
 #define MCP_SCL_PIN 1   // GPA1 na MCP23017 (SCL pre DS3231)
 
+#define OUTPUT1   4
+#define OUTPUT2   5
+#define OUTPUT3   6
+#define OUTPUT4   7
+#define DELAY 2 
+
+//WIFI
+#define WIFI_AP_SSID     "T-SIMCAM-"
+#define WIFI_AP_PASSWORD "12345678"
+
 // Compatibility: if other code uses CAM_* names, map them to the standard names
 #ifndef CAM_PWDN_PIN
 #define CAM_PWDN_PIN     PWDN_GPIO_NUM
