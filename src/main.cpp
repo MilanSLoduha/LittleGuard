@@ -30,7 +30,7 @@ RTC_DS3231 rtc;
 Adafruit_BME680 bme;
 bool bme680Ready = false;
 #define SEALEVELPRESSURE_HPA (1013.25)
-#define BME680_ADDR 0x77  // I2C adresa BME680
+#define BME680_ADDR 0x77  //BME680
 
 int lastState = -1;
 
@@ -60,8 +60,6 @@ void setup() {
     Serial.println("WiFi connection FAILED - continuing without WiFi");
   }
 
-  // Inicializácia I2C pre MCP23017
-
   Wire.begin(SDA_PIN, SCL_PIN);
 
   espClient.setInsecure();
@@ -87,23 +85,17 @@ void setup() {
   } else {
     Serial.println("WARNING: MCP23017 not found!");
   }
-  
-  // RTC test cez bit-banging (ak je MCP pripravený)
-  Serial.println("Testing RTC via bit-banging...");
+
   if (mcpReady) {
     DateTime testTime;
-    if (read_rtc_time(testTime)) {
-      Serial.println("RTC read successful via bit-banging!");
-      Serial.printf("Current time: %s\n", stringTime(testTime).c_str());
-    } else {
+    if (!read_rtc_time(testTime)) {
       Serial.println("WARNING: RTC read failed via bit-banging");
     }
   } else {
     Serial.println("Skipping RTC test - MCP not ready");
   }
 
-  // Inicializácia BME680 senzora
-  Serial.println("\n=== BME680 Initialization ===");
+
   bme680Ready = false;
   
   if(bme.begin(0x77, &Wire)) {
@@ -116,16 +108,10 @@ void setup() {
     bme.setPressureOversampling(BME680_OS_4X);
     bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
     bme.setGasHeater(320, 150); // 320°C for 150 ms
-    delay(2000);  // Dlhší čas na stabilizáciu
+    delay(2000);
       
-    // Test prvého čítania
-    Serial.println("Testing first BME680 reading...");
-    if (bme.performReading()) {
-      Serial.printf("  Temperature: %.2f°C\n", bme.temperature);
-      Serial.printf("  Pressure: %.2f hPa\n", bme.pressure / 100.0);
-      Serial.printf("  Humidity: %.2f%%\n", bme.humidity);
-      Serial.println("BME680 is working correctly!");
-    } else {
+   
+    if (!bme.performReading()) {
       Serial.println("WARNING: BME680 detected but failed to perform reading");
       bme680Ready = false;
     }
@@ -135,10 +121,6 @@ void setup() {
   
   
   Serial.println("\n=== Setup complete! ===");
-  Serial.printf("Status: MCP=%s, RTC=%s, BME680=%s\n", 
-    mcpReady ? "OK" : "FAIL",
-    mcpReady ? "OK" : "N/A",  // RTC depends on MCP
-    bme680Ready ? "OK" : "FAIL");
 }
 
 void loop() {
@@ -165,7 +147,7 @@ void loop() {
 
   unsigned long endTime = bme.beginReading();
   if (endTime == 0) {
-    Serial.println(F("Failed to begin reading :("));
+    Serial.println(F("Failed to begin reading"));
     return;
   }
   
@@ -204,9 +186,7 @@ void loop() {
     }
     lastState = pirState;
     sprava = String(pirState);
-    if (client.publish(motion_topic, sprava.c_str())) {
-      Serial.println("Message published successfully");
-    } else {
+    if (!client.publish(motion_topic, sprava.c_str())) {
       Serial.println("Message publishing failed");
     }
   }
