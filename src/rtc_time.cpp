@@ -58,3 +58,8 @@ void printTime(DateTime &now) {
     Serial.println("Chyba pri čítaní času z DS3231!");
   }
 }
+
+String stringTime(DateTime &now) {
+  String cas = String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second()) + " " + String(now.day()) + ". " + String(now.month()) + ". " + String(now.year());
+  return cas;
+}

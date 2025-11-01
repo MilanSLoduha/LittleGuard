@@ -6,15 +6,218 @@
 #include "select_pins.h"
 #include "sd_storage.h"
 #include "camera.h"
-#include "bit_banging.h"
 #include "rtc_time.h"
 #include <stepper.h>
 #include "WiFi.h"
 #include "secrets.h"
+#include <PubSubClient.h>
+#include <WiFiClientSecure.h>
+#include "esp_task_wdt.h"
+
+// BME680 musí byť za camera.h kvôli konfliktu sensor_t
+// senzor v namespace
+#define sensor_t adafruit_sensor_t
+#include "Adafruit_BME680.h"
+#undef sensor_t
+
+ /////////////////////////////////////////////// MQTT TEST CODE ////////////////////////////////////////////
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
 
 Adafruit_MCP23X17 mcp;
 RTC_DS3231 rtc;
- /////////////////////////////////////////////// MAIN CODE /////////////////////////////////////////////////
+Adafruit_BME680 bme;
+bool bme680Ready = false;
+#define SEALEVELPRESSURE_HPA (1013.25)
+#define BME680_ADDR 0x77  // I2C adresa BME680
+
+int lastState = -1;
+
+const char* temperature_topic = TEMPERATURE_TOPIC;
+const char* motion_topic = MOTION_TOPIC;
+const char* last_motion_topic = LAST_MOTION_TOPIC;
+const char* command_topic = COMMAND_TOPIC;
+const char* settings_topic = SETTINGS_TOPIC;
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  unsigned long wifiTimeout = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("WiFi connection FAILED - continuing without WiFi");
+  }
+
+  // Inicializácia I2C pre MCP23017
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  espClient.setInsecure();
+  client.setServer(MQTT_SERVER, MQTT_PORT);
+
+  // Inicializácia MCP23017
+  Serial.println("Looking for MCP23017...");
+  bool mcpReady = false;
+  if (mcp.begin_I2C(0x20)) {
+    Serial.println("MCP23017 found!");
+    mcp.pinMode(MCP_SDA_PIN, OUTPUT); // GPA0 ako SDA pre DS3231
+    mcp.pinMode(MCP_SCL_PIN, OUTPUT); // GPA1 ako SCL pre DS3231
+    mcp.digitalWrite(MCP_SDA_PIN, HIGH); // Simulácia pull-up
+    mcp.digitalWrite(MCP_SCL_PIN, HIGH);
+
+    mcp.pinMode(MCP_PIR_PIN, INPUT);
+
+    mcp.pinMode(OUTPUT1, OUTPUT);
+    mcp.pinMode(OUTPUT2, OUTPUT);
+    mcp.pinMode(OUTPUT3, OUTPUT);
+    mcp.pinMode(OUTPUT4, OUTPUT);
+    mcpReady = true;
+  } else {
+    Serial.println("WARNING: MCP23017 not found!");
+  }
+  
+  // RTC test cez bit-banging (ak je MCP pripravený)
+  Serial.println("Testing RTC via bit-banging...");
+  if (mcpReady) {
+    DateTime testTime;
+    if (read_rtc_time(testTime)) {
+      Serial.println("RTC read successful via bit-banging!");
+      Serial.printf("Current time: %s\n", stringTime(testTime).c_str());
+    } else {
+      Serial.println("WARNING: RTC read failed via bit-banging");
+    }
+  } else {
+    Serial.println("Skipping RTC test - MCP not ready");
+  }
+
+  // Inicializácia BME680 senzora
+  Serial.println("\n=== BME680 Initialization ===");
+  bme680Ready = false;
+  
+  if(bme.begin(0x77, &Wire)) {
+    bme680Ready = true;
+  } 
+ 
+  if(bme680Ready) {
+    bme.setTemperatureOversampling(BME680_OS_8X);
+    bme.setHumidityOversampling(BME680_OS_2X);
+    bme.setPressureOversampling(BME680_OS_4X);
+    bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+    bme.setGasHeater(320, 150); // 320°C for 150 ms
+    delay(2000);  // Dlhší čas na stabilizáciu
+      
+    // Test prvého čítania
+    Serial.println("Testing first BME680 reading...");
+    if (bme.performReading()) {
+      Serial.printf("  Temperature: %.2f°C\n", bme.temperature);
+      Serial.printf("  Pressure: %.2f hPa\n", bme.pressure / 100.0);
+      Serial.printf("  Humidity: %.2f%%\n", bme.humidity);
+      Serial.println("BME680 is working correctly!");
+    } else {
+      Serial.println("WARNING: BME680 detected but failed to perform reading");
+      bme680Ready = false;
+    }
+  } else {
+    Serial.println("WARNING: BME680 not found at address 0x77");
+  }
+  
+  
+  Serial.println("\n=== Setup complete! ===");
+  Serial.printf("Status: MCP=%s, RTC=%s, BME680=%s\n", 
+    mcpReady ? "OK" : "FAIL",
+    mcpReady ? "OK" : "N/A",  // RTC depends on MCP
+    bme680Ready ? "OK" : "FAIL");
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, skipping loop");
+    delay(5000);
+    return;
+  }
+
+  if (!client.connected()) {
+    if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
+      Serial.print("MQTT connection failed, rc=");
+      Serial.println(client.state());
+      delay(2000);
+      return;
+    }
+  }
+
+  if (!bme680Ready) {
+    Serial.println("BME680 not ready, skipping sensor reading");
+    delay(10000);
+    return;
+  }
+
+  unsigned long endTime = bme.beginReading();
+  if (endTime == 0) {
+    Serial.println(F("Failed to begin reading :("));
+    return;
+  }
+  
+
+  //Serial.print(millis());
+  //Serial.println(endTime);
+  
+  float tlak = bme.pressure / 100.0; // hPa
+  float vlhkost = bme.humidity; // %
+  float teplota = bme.temperature; // °C
+  float plyn = bme.gas_resistance / 1000.0; // KOhms
+  float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+  
+  //odosielanie
+  String sprava = String(bme.temperature);
+  if (client.publish(temperature_topic, sprava.c_str())) {
+    Serial.println("Message published successfully");
+  } else {
+    Serial.println("Message publishing failed");
+  }
+
+  int pirState = mcp.digitalRead(MCP_PIR_PIN);
+  if (pirState != lastState) {
+    if(lastState == 1) {
+      DateTime now;
+      if (read_rtc_time(now)) {
+        sprava = stringTime(now);
+        if (!client.publish(last_motion_topic, sprava.c_str())) {
+          Serial.println("Last motion publish FAILED");
+        }
+      } else {
+        Serial.println("ERROR: Failed to read RTC time");
+        sprava = "RTC read failed";
+        client.publish(last_motion_topic, sprava.c_str());
+      }
+    }
+    lastState = pirState;
+    sprava = String(pirState);
+    if (client.publish(motion_topic, sprava.c_str())) {
+      Serial.println("Message published successfully");
+    } else {
+      Serial.println("Message publishing failed");
+    }
+  }
+  client.loop();
+  
+  Serial.println();
+  delay(10000);
+}
+ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* /////////////////////////////////////////////// MAIN CODE /////////////////////////////////////////////////
  int lastMotionStatus = -1;
  int currentMotorAngle = 0;  // Aktuálna pozícia motora
  
@@ -98,6 +301,7 @@ void webServer() {
     Serial.println("");
     Serial.print("Connected to WiFi. IP: ");
     Serial.println(WiFi.localIP());
+
     
     setupCamera();
     
@@ -158,7 +362,7 @@ void loop() {
 
   Serial.clearWriteError();
 }
-
+*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /* //////////////////////////////////////////// motor test code //////////////////////////////////////////////
 #define OUTPUT1   4               // Connected to the Blue coloured wire
@@ -282,7 +486,8 @@ void setup()
     digitalWrite(PWR_ON_PIN, HIGH);
     delay(100);
     Serial.begin(115200);
-    Serial.println("T-SIMCAM self test");
+    delay(500);  // Počkaj, aby sa Serial stabilizoval
+    Serial.println("\n\n=== T-SIMCAM self test START ===");
 
 #ifdef CAM_IR_PIN
     //Teset IR Filter
@@ -294,18 +499,19 @@ void setup()
     }
 #endif
     sd_test();
-    //pcie_test();
-    mic_init();
+    pcie_test();
+    //mic_init();
     //wifi_scan_connect();
     delay(2000);
     //camera_test();
-    check_sound();
+    //check_sound();
 }
 
 void loop()
 {
-    check_sound(); 
-    delay(5);
+    //check_sound(); 
+    Serial.print(".....");
+    delay(1000);
 }
 
 void sd_test(void)
@@ -479,11 +685,21 @@ void wifi_scan_connect(void)
 
     uint32_t last_m = millis();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
+    
+    // Timeout 10 sekúnd na pripojenie
+    uint32_t timeout = 10000;
+    while (WiFi.status() != WL_CONNECTED && (millis() - last_m) < timeout) {
         Serial.print(".");
         vTaskDelay(100);
     }
     Serial.println("");
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi connection failed - timeout!");
+        Serial.println("Continuing without WiFi...");
+        return;
+    }
+    
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
@@ -537,6 +753,7 @@ void pcie_test(void)
     do {
         SerialAT.println("AT+CPIN?");
         delay(50);
+        Serial.println(opacko);
     } while (!SerialAT.find("READY") && opacko++ < 100);
     Serial.println("SIM card has been identified");
 }
@@ -729,3 +946,266 @@ void loop() {
   delay(1000);
 }
 *//////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* /////////////////////////////////////////////// BME680 with Adafruit Library ////////////////////////////////////////
+
+Adafruit_MCP23X17 mcp;  // MCP23017 GPIO expander
+Adafruit_BME680 bme;    // BME680 on hardware I2C (same bus as MCP23017)
+bool bme680Ready = false;
+#define SEALEVELPRESSURE_HPA (1013.25)
+#define BME680_ADDR 0x77  // I2C adresa BME680
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("\n\n=== T-SIMCAM BME680 + MCP23017 on Hardware I2C ===");
+  Serial.println("Initializing I2C on GPIO43 (SDA) and GPIO44 (SCL)");
+
+  // Inicializácia I2C pre MCP23017 a BME680 na tej istej zbernici!
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  // Inicializácia MCP23017
+  if (!mcp.begin_I2C(0x20)) {
+    Serial.println(" MCP23017 not found at 0x20! Check wiring.");
+    while (1) delay(1000);
+  }
+  Serial.println("MCP23017 ready at 0x20");
+  
+  // BME680 na tej istej I2C zbernici!
+  Serial.println("Attempting to initialize BME680...");
+  delay(100);
+  
+  if(bme.begin(BME680_ADDR)) {
+    Serial.println("BME680 detected at 0x77!");
+    
+    // Nastavenia zo vzorového kódu
+    bme.setTemperatureOversampling(BME680_OS_8X);
+    bme.setHumidityOversampling(BME680_OS_2X);
+    bme.setPressureOversampling(BME680_OS_4X);
+    bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+    bme.setGasHeater(320, 150); // 320°C for 150 ms
+    
+    
+    // Prvé čítanie môže zlyhať - počkaj 2 sekundy
+    Serial.println("Waiting 2 seconds for sensor stabilization...");
+    delay(2000);
+    
+    bme680Ready = true;
+  } else {
+    Serial.println(" BME680 initialization failed");
+    Serial.println("Check wiring: BME680 SDA->GPIO43, SCL->GPIO44");
+    Serial.println("              (same as MCP23017)");
+  }
+  
+  Serial.println("\nSetup complete!");
+}
+
+
+void loop() {
+  if(!bme680Ready) {
+    Serial.println("BME680 not ready, waiting...");
+    delay(5000);
+    return;
+  }
+  
+  Serial.println("\n--- Reading BME680 ---");
+
+    
+
+  unsigned long endTime = bme.beginReading();
+  if (endTime == 0) {
+    Serial.println(F("Failed to begin reading :("));
+    return;
+  }
+  Serial.print(F("Reading started at "));
+  Serial.print(millis());
+  Serial.print(F(" and will finish at "));
+  Serial.println(endTime);
+
+  Serial.println(F("You can do other work during BME680 measurement."));
+  delay(50); // This represents parallel work.
+  // There's no need to delay() until millis() >= endTime: bme.endReading()
+  // takes care of that. It's okay for parallel work to take longer than
+  // BME680's measurement time.
+
+  // Obtain measurement results from BME680. Note that this operation isn't
+  // instantaneous even if milli() >= endTime due to I2C/SPI latency.
+  if (!bme.endReading()) {
+    Serial.println(F("Failed to complete reading :("));
+    return;
+  }
+  Serial.print(F("Reading completed at "));
+  Serial.println(millis());
+
+  Serial.print(F("Temperature = "));
+  Serial.print(bme.temperature);
+  Serial.println(F(" *C"));
+
+  Serial.print(F("Pressure = "));
+  Serial.print(bme.pressure / 100.0);
+  Serial.println(F(" hPa"));
+
+  Serial.print(F("Humidity = "));
+  Serial.print(bme.humidity);
+  Serial.println(F(" %"));
+
+  Serial.print(F("Gas = "));
+  Serial.print(bme.gas_resistance / 1000.0);
+  Serial.println(F(" KOhms"));
+
+  Serial.print(F("Approx. Altitude = "));
+  Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
+  Serial.println(F(" m"));
+
+  Serial.println();
+    delay(5000);
+
+  
+}
+
+*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* ///////////////////////////////////////////// SMS TEST CODE ///////////////////////////////////////////////
+#define SerialAT Serial1
+
+String phoneNumber = "+421908199904";
+
+void sendSMS(String number, String message);
+void pcie_test();
+
+bool modemReady = false;
+
+void pcie_test()
+{
+    SerialAT.begin(115200, SERIAL_8N1, PCIE_RX_PIN, PCIE_TX_PIN);
+    delay(100);
+    pinMode(PCIE_PWR_PIN, OUTPUT);
+    digitalWrite(PCIE_PWR_PIN, 1);
+    delay(500);
+    digitalWrite(PCIE_PWR_PIN, 0);
+    delay(3000);
+    
+    // Prebudenie modemu
+    do {
+        SerialAT.println("AT");
+        delay(50);
+    } while (!SerialAT.find("OK"));
+
+    // Kontrola SIM karty
+    int opacko = 0;
+    do {
+        SerialAT.println("AT+CPIN?");
+        delay(50);
+        Serial.println(opacko);
+    } while (!SerialAT.find("READY") && opacko++ < 100);
+    
+    // Registrácia na sieť
+    SerialAT.println("AT+CREG?");
+    delay(2000);
+    while(SerialAT.available()) Serial.write(SerialAT.read());
+    
+    // Kontrola signálu
+    SerialAT.println("AT+CSQ");
+    delay(1000);
+    while(SerialAT.available()) Serial.write(SerialAT.read());
+    
+    // Text mode pre SMS
+    SerialAT.println("AT+CMGF=1");
+    delay(1000);
+    String resp = SerialAT.readString();
+    Serial.print("Response: "); Serial.println(resp);
+    
+    SerialAT.println("AT+CSCS=\"GSM\"");
+    delay(1000);
+    resp = SerialAT.readString();
+    
+    Serial.println("Modem fully initialized!");
+}
+
+void setup() {
+  pinMode(1, OUTPUT);
+  digitalWrite(1, HIGH);
+  
+  Serial.begin(115200);
+  delay(2000);
+  
+  pcie_test();
+
+  delay(1000);
+  
+  sendSMS(phoneNumber, "Ono to funguje :D");
+  
+}
+
+void loop() {
+
+  delay(100);
+}
+
+void sendSMS(String number, String message) {
+  
+  while(SerialAT.available()) SerialAT.read();
+
+  SerialAT.print("AT+CMGS=\"");
+  SerialAT.print(number);
+  SerialAT.println("\"");
+  
+  uint32_t timeout = millis();
+  bool promptReceived = false;
+  
+  while(millis() - timeout < 5000) {
+    if(SerialAT.available()) {
+      char c = SerialAT.read();
+      Serial.write(c);
+      if(c == '>') {
+        promptReceived = true;
+        break;
+      }
+    }
+    delay(10);
+  }
+  
+  if(!promptReceived) {
+    Serial.println("\n ERROR: No '>' prompt received!");
+    return;
+  }
+  
+  SerialAT.print(message);
+  delay(100);
+  
+  SerialAT.write(26); // Ctrl+Z na odoslanie
+
+  timeout = millis();
+  String response = "";
+  bool success = false;
+  
+  while(millis() - timeout < 20000) {
+    if(SerialAT.available()) {
+      char c = SerialAT.read();
+      response += c;
+      Serial.write(c);
+      
+      if(response.indexOf("+CMGS:") != -1 || 
+         (response.indexOf("OK") != -1 && response.length() > 10)) {
+        success = true;
+        break;
+      }
+      
+      if(response.indexOf("ERROR") != -1 || 
+         response.indexOf("FAIL") != -1) {
+        break;
+      }
+    }
+    delay(10);
+  }
+  
+  Serial.println();
+  if(success) {
+    Serial.println("Sprava odoslana");
+  } else {
+    Serial.println("Odoslanie zlyhalo");
+    Serial.print("Chyba: ");
+    Serial.println(response);
+  }
+}
+*/ /////////////////////////////////////////////////////////////////////////////////////////////////////////

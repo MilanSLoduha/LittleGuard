@@ -52,6 +52,10 @@
 #define MCP_SDA_PIN 0   // GPA0 na MCP23017 (SDA pre DS3231)
 #define MCP_SCL_PIN 1   // GPA1 na MCP23017 (SCL pre DS3231)
 
+// BME680 bit-banging I2C na MCP23017 port B
+#define BME_SDA_PIN 15  // GPB7 na MCP23017 (SDA pre BME680)
+#define BME_SCL_PIN 14  // GPB6 na MCP23017 (SCL pre BME680)
+
 #define OUTPUT1   4
 #define OUTPUT2   5
 #define OUTPUT3   6

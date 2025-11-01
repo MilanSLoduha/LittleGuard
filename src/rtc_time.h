@@ -4,3 +4,4 @@
 
 bool read_rtc_time(DateTime &dt);
 void printTime(DateTime &now);
+String stringTime(DateTime &now);

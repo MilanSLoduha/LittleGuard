@@ -19,7 +19,7 @@
 #include "Arduino.h"
 
 // External function to control motor
-extern void setMotorAngle(int angle);
+//extern void setMotorAngle(int angle);
 
 typedef struct {
     httpd_req_t *req;
@@ -274,11 +274,11 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     else if (!strcmp(variable, "special_effect")) res = s->set_special_effect(s, val);
     else if (!strcmp(variable, "wb_mode")) res = s->set_wb_mode(s, val);
     else if (!strcmp(variable, "ae_level")) res = s->set_ae_level(s, val);
-    else if (!strcmp(variable, "motor_angle")) {
+    /*else if (!strcmp(variable, "motor_angle")) {
         // Motor control handler
         setMotorAngle(val);
         res = 0;  // Success
-    }
+    }*/
     else {
         res = -1;
     }

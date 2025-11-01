@@ -28,10 +28,9 @@ void i2c_write_bit(uint8_t bit) {
 }
 
 uint8_t i2c_read_bit() {
-  uint8_t bit;
   mcp.digitalWrite(MCP_SCL_PIN, HIGH);
   delayMicroseconds(5);
-  bit = mcp.digitalRead(MCP_SDA_PIN);
+  uint8_t bit = mcp.digitalRead(MCP_SDA_PIN);
   mcp.digitalWrite(MCP_SCL_PIN, LOW);
   return bit;
 }
@@ -40,9 +39,9 @@ bool i2c_write_byte(uint8_t byte) {
   for (int i = 7; i >= 0; i--) {
     i2c_write_bit((byte >> i) & 1);
   }
-  mcp.pinMode(MCP_SDA_PIN, INPUT); // Na čítanie ACK
+  mcp.pinMode(MCP_SDA_PIN, INPUT);
   uint8_t ack = i2c_read_bit();
-  mcp.pinMode(MCP_SDA_PIN, OUTPUT); // Späť na výstup
+  mcp.pinMode(MCP_SDA_PIN, OUTPUT);
   return ack == 0;
 }
 
