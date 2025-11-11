@@ -1,4 +1,380 @@
-// main.cpp - top-level orchestration
+/* ////////////////////////////////////// LTE network and MQTT test code //////////////////////////////////
+#include <Arduino.h>
+
+#define TINY_GSM_MODEM_A7670
+#define TINY_GSM_RX_BUFFER 1024
+#define DUMP_AT_COMMANDS
+
+#include "secrets.h"
+#include "HivemqRootCA.h"
+#include <TinyGsmClient.h>
+#include "select_pins.h"
+
+#include <StreamDebugger.h>
+StreamDebugger debugger(SerialAT, Serial);
+TinyGsm modem(debugger);
+
+const char *broker_host = MQTT_SERVER;
+const uint16_t broker_port = 8883;
+const char *broker_username = MQTT_USER;
+const char *broker_password = MQTT_PASSWORD;
+const char *client_id = "T-SIMCAM-LTE";
+
+const char *temperature_topic = TEMPERATURE_TOPIC;
+const char *motion_topic = MOTION_TOPIC;
+
+const uint8_t mqtt_client_id = 0;
+uint32_t check_connect_millis = 0;
+
+bool mqtt_connect_manual() {
+    modem.sendAT("+CMQTTDISC=0,120"); // odpoj vsetky existujuce pripojenia
+    modem.waitResponse(5000);
+    delay(500);
+    
+    modem.sendAT("+CMQTTREL=0"); // Uvolneine vsetkych zdrojov klienta
+    modem.waitResponse(5000);
+    delay(500);
+    
+    modem.sendAT("+CMQTTSTOP"); // Stop MQTT sluzby
+    modem.waitResponse(5000);
+    delay(2000);
+
+    modem.sendAT("+CMQTTSTART"); // Spustenie MQTT sluzby
+    if(modem.waitResponse(10000) != 1) {
+        Serial.println("Failed to start MQTT service");
+        return false;
+    }
+    delay(1000);
+
+    modem.sendAT("+CMQTTACCQ=0,\"", client_id, "\",1"); // ziskanie MQTT klienta
+    if(modem.waitResponse(5000) != 1) {
+        Serial.println("Failed to acquire MQTT client");
+        return false;
+    }
+    
+    modem.sendAT("+CMQTTCFG=\"version\",0,4"); // nastav MQTT verziu 4 = 3.1.1
+    if(modem.waitResponse() != 1) {
+        Serial.println("Failed to set MQTT version");
+        return false;
+    }
+
+    modem.sendAT("+CSSLCFG=\"sslversion\",0,4");  // nastav SSL verziu 4 = TLS 1.2
+    if(modem.waitResponse() != 1) {
+        Serial.println("Failed to set SSL version");
+    }
+    
+    modem.sendAT("+CSSLCFG=\"enableSNI\",0,1");  // Povol Server Name Indication
+    if(modem.waitResponse() != 1) {
+        Serial.println("Failed to enable SNI");
+    }
+  
+    modem.sendAT("+CSSLCFG=\"authmode\",0,0");  // 0 = bez autentigikacie servera
+    if(modem.waitResponse() != 1) {
+        Serial.println("Failed to set auth mode");
+    }
+    
+    Serial.println("Enabling SSL for MQTT...");
+    modem.sendAT("+CMQTTSSLCFG=0,0");  // SSL pre MQTT - client_id=0, ssl_ctx_index=0
+    if(modem.waitResponse() != 1) {
+        Serial.println("SSL config failed!");
+        return false;
+    }
+    
+    modem.sendAT("+CMQTTCONNECT=0,\"tcp://", broker_host, ":", String(broker_port), 
+                 "\",60,1,\"", broker_username, "\",\"", broker_password, "\"");
+    
+    if(modem.waitResponse(30000) != 1) {
+        Serial.println(" MQTT SSL connection failed!");
+        
+        modem.sendAT("+CMQTTCONNECT?"); // Debug info
+        modem.waitResponse(2000);
+        
+        return false;
+    }
+
+    return true;
+}
+
+void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
+  Serial.println(topic);
+  for (int i = 0; i < len; i++) {
+      Serial.print((char)payload[i]);
+  }
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+
+    SerialAT.begin(115200, SERIAL_8N1, PCIE_RX_PIN, PCIE_TX_PIN);
+    
+    pinMode(PWR_ON_PIN, OUTPUT);
+    digitalWrite(PWR_ON_PIN, HIGH);
+    delay(300);
+    
+
+    pinMode(PCIE_PWR_PIN, OUTPUT);
+    digitalWrite(PCIE_PWR_PIN, LOW);
+    delay(100);
+    digitalWrite(PCIE_PWR_PIN, HIGH);
+    delay(MODEM_PWRON_PWMS);
+    digitalWrite(PCIE_PWR_PIN, LOW);
+    
+    int retry = 0;
+    while (!modem.testAT(1000)) {
+        Serial.print(".");
+        if (retry++ > 30) {
+            // Restart
+            digitalWrite(PCIE_PWR_PIN, LOW);
+            delay(100);
+            digitalWrite(PCIE_PWR_PIN, HIGH);
+            delay(MODEM_PWRON_PWMS);
+            digitalWrite(PCIE_PWR_PIN, LOW);
+            retry = 0;
+        }
+    }
+    
+    SimStatus sim = SIM_ERROR;
+    while (sim != SIM_READY) {
+        sim = modem.getSimStatus();
+        if(sim == SIM_READY) {
+            break;
+        } else if(sim == SIM_LOCKED) {
+            Serial.println("SIM locked");
+        }
+        delay(1000);
+    }
+    
+    if(!modem.setNetworkAPN("o2internet")) {
+        Serial.println("trying 'internet.o2active'");
+        modem.setNetworkAPN("internet.o2active");
+    }
+    
+    //cakanie na siet
+    int16_t sq;
+    RegStatus status = REG_NO_RESULT;
+    while (status == REG_NO_RESULT || status == REG_SEARCHING || status == REG_UNREGISTERED) {
+      status = modem.getRegistrationStatus();
+      if(status == REG_UNREGISTERED || status == REG_SEARCHING) {
+        sq = modem.getSignalQuality();
+        delay(1000);
+      } 
+      else if(status == REG_DENIED) {
+          Serial.println("\nNetwork registration denied!");
+          return;
+      } 
+      else if(status == REG_OK_ROAMING) {
+          Serial.println("\nRegistered (roaming)");
+          break;
+      }
+      else break;
+    }
+    
+    Serial.print("Signal quality: ");
+    Serial.println(modem.getSignalQuality());
+    
+    // Activate network
+    if(!modem.setNetworkActive()) {
+        Serial.println(" Failed to activate network");
+    }
+
+    
+    modem.sendAT("+CMQTTSTOP"); // Zrus existujuci session
+    modem.waitResponse(5000);
+    
+    bool enableSSL = true;
+    bool enableSNI = true;
+    modem.mqtt_begin(enableSSL, enableSNI);
+    
+    modem.mqtt_set_certificate(HivemqRootCA);
+    
+    delay(1000);
+    
+    // Connect using manual AT commands
+    if(!mqtt_connect_manual()) {
+        Serial.println("MQTT connection failed!");
+        return;
+    }
+
+    modem.mqtt_set_callback(mqtt_callback);
+    
+    modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
+}
+
+void loop() {
+    if (millis() > check_connect_millis) {
+        check_connect_millis = millis() + 10000UL;
+        
+        modem.sendAT("+CMQTTDISC?"); // som pripojeny?
+        if(modem.waitResponse(2000) != 1) {
+            Serial.println("MQTT disconnected, reconnecting...");
+            mqtt_connect_manual();
+        }
+        else {
+            String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) + "s";
+            
+            if(!modem.mqtt_publish(mqtt_client_id, motion_topic, message.c_str(), 1)) {
+                Serial.println("Publish failed");
+            }
+        }
+    }
+    
+    modem.mqtt_handle();
+    delay(100);
+}
+*/ //////////////////////////////////////////////////////////////////////////////////////////////
+
+/* /////////////////////////////////////////////// send sms ///////////////////////////////////////////////
+
+#define TINY_GSM_MODEM_A7670
+#define LILYGO_T_SIMCAM
+
+#include <Arduino.h>
+#include "select_pins.h"  // All pin definitions and modem config
+
+#define SerialMon Serial
+#define SMS_TARGET "+421908199904"
+
+// Include TinyGSM (modem type already defined at top of file)
+#include <TinyGsmClient.h>
+
+#ifdef DUMP_AT_COMMANDS
+#include <StreamDebugger.h>
+StreamDebugger debugger(SerialAT, SerialMon);
+TinyGsm modem(debugger);
+#else
+TinyGsm modem(SerialAT);
+#endif
+
+
+// It depends on the operator whether to set up an APN. If some operators do not set up an APN,
+// they will be rejected when registering for the network. You need to ask the local operator for the specific APN.
+// APNs from other operators are welcome to submit PRs for filling.
+// #define NETWORK_APN     "CHN-CT"             //CHN-CT: China Telecom
+
+void setup()
+{
+    Serial.begin(115200);
+#ifdef BOARD_POWERON_PIN
+    pinMode(BOARD_POWERON_PIN, OUTPUT);
+    digitalWrite(BOARD_POWERON_PIN, HIGH);
+#endif
+
+    // Set modem reset pin ,reset modem
+#ifdef MODEM_RESET_PIN
+    pinMode(MODEM_RESET_PIN, OUTPUT);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL); delay(100);
+    digitalWrite(MODEM_RESET_PIN, MODEM_RESET_LEVEL); delay(2600);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+#endif
+
+#ifdef MODEM_FLIGHT_PIN
+    // If there is an airplane mode control, you need to exit airplane mode
+    pinMode(MODEM_FLIGHT_PIN, OUTPUT);
+    digitalWrite(MODEM_FLIGHT_PIN, HIGH);
+#endif
+
+    // Pull down DTR to ensure the modem is not in sleep state
+    pinMode(MODEM_DTR_PIN, OUTPUT);
+    digitalWrite(MODEM_DTR_PIN, LOW);
+
+    // Turn on modem
+    pinMode(BOARD_PWRKEY_PIN, OUTPUT);
+    digitalWrite(BOARD_PWRKEY_PIN, LOW);
+    delay(100);
+    digitalWrite(BOARD_PWRKEY_PIN, HIGH);
+    delay(MODEM_POWERON_PULSE_WIDTH_MS);
+    digitalWrite(BOARD_PWRKEY_PIN, LOW);
+
+#ifdef MODEM_RING_PIN
+    // Set ring pin input
+    pinMode(MODEM_RING_PIN, INPUT_PULLUP);
+#endif
+
+    // Set modem baud
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+
+    Serial.println("Start modem...");
+    delay(3000);
+
+    while (!modem.testAT()) {
+        delay(10);
+    }
+
+
+    // Wait PB DONE
+    Serial.println("Wait SMS Done.");
+    if (!modem.waitResponse(100000UL, "SMS DONE")) {
+        Serial.println("Can't wait from sms register ....");
+        return;
+    }
+
+
+#ifdef NETWORK_APN
+    Serial.printf("Set network apn : %s\n", NETWORK_APN);
+    if (!modem.setNetworkAPN(NETWORK_APN)) {
+        Serial.println("Set network apn error !");
+    }
+#endif
+
+
+    // Check network registration status and network signal status
+    int16_t sq ;
+    Serial.print("Wait for the modem to register with the network.");
+    RegStatus status = REG_NO_RESULT;
+    while (status == REG_NO_RESULT || status == REG_SEARCHING || status == REG_UNREGISTERED) {
+        status = modem.getRegistrationStatus();
+        switch (status) {
+        case REG_UNREGISTERED:
+        case REG_SEARCHING:
+            sq = modem.getSignalQuality();
+            Serial.printf("[%lu] Signal Quality:%d\n", millis() / 1000, sq);
+            delay(1000);
+            break;
+        case REG_DENIED:
+            Serial.println("Network registration was rejected, please check if the APN is correct");
+            return ;
+        case REG_OK_HOME:
+            Serial.println("Online registration successful");
+            break;
+        case REG_OK_ROAMING:
+            Serial.println("Network registration successful, currently in roaming mode");
+            break;
+        default:
+            Serial.printf("Registration Status:%d\n", status);
+            delay(1000);
+            break;
+        }
+    }
+    Serial.println();
+
+
+    Serial.printf("Registration Status:%d\n", status);
+    delay(1000);
+
+    Serial.print("Init success, start to send message to  ");
+    Serial.println(SMS_TARGET);
+
+    String imei = modem.getIMEI();
+    bool res = modem.sendSMS(SMS_TARGET, String("Hello from ") + imei);
+    Serial.print("Send sms message ");
+    Serial.println(res ? "OK" : "fail");
+}
+
+void loop()
+{
+
+    if (SerialAT.available()) {
+        Serial.write(SerialAT.read());
+    }
+    if (Serial.available()) {
+        SerialAT.write(Serial.read());
+    }
+    delay(1);
+}
+*/
+
+/* /////////////////////////////////////////////// MQTT TEST CODE ////////////////////////////////////////////
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MCP23X17.h>
@@ -20,7 +396,7 @@
 #include "Adafruit_BME680.h"
 #undef sensor_t
 
- /////////////////////////////////////////////// MQTT TEST CODE ////////////////////////////////////////////
+ 
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -69,7 +445,6 @@ void setup() {
   Serial.println("Looking for MCP23017...");
   bool mcpReady = false;
   if (mcp.begin_I2C(0x20)) {
-    Serial.println("MCP23017 found!");
     mcp.pinMode(MCP_SDA_PIN, OUTPUT); // GPA0 ako SDA pre DS3231
     mcp.pinMode(MCP_SCL_PIN, OUTPUT); // GPA1 ako SCL pre DS3231
     mcp.digitalWrite(MCP_SDA_PIN, HIGH); // Simulácia pull-up
@@ -195,16 +570,65 @@ void loop() {
   Serial.println();
   delay(10000);
 }
- ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* /////////////////////////////////////////////// MAIN CODE /////////////////////////////////////////////////
+ /////////////////////////////////////////////// MAIN CODE /////////////////////////////////////////////////
+#define TINY_GSM_MODEM_A7670
+#define TINY_GSM_RX_BUFFER 1024
+#define DUMP_AT_COMMANDS
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_MCP23X17.h>
+#include <RTClib.h>
+#include "select_pins.h"
+#include "sd_storage.h"
+#include "camera.h"
+#include "rtc_time.h"
+#include <stepper.h>
+#include "WiFi.h"
+#include "secrets.h"
+#include <PubSubClient.h>
+#include <WiFiClientSecure.h>
+#include "esp_task_wdt.h"
+#include <TinyGsmClient.h>
+#include <StreamDebugger.h>
+#include "mqtt_server.h"
+#include "modem.h"
+
+
+StreamDebugger debugger(SerialAT, Serial);
+TinyGsm modem(debugger);
+
+
  int lastMotionStatus = -1;
  int currentMotorAngle = 0;  // Aktuálna pozícia motora
+
+ // BME680 musí byť za camera.h kvôli konfliktu sensor_t
+// senzor v namespace
+#define sensor_t adafruit_sensor_t
+#include "Adafruit_BME680.h"
+#undef sensor_t
+ 
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+Adafruit_MCP23X17 mcp;
+bool mcpReady = false;
+RTC_DS3231 rtc;
+bool rtcReady = false;
+Adafruit_BME680 bme;
+bool bme680Ready = false;
+#define SEALEVELPRESSURE_HPA (1013.25)
+#define BME680_ADDR 0x77  //BME680
+
+// check_connect_millis je definovaná v modem.cpp
  
  void startCameraServer();
  
  // Funkcia na ovládanie motora
- void setMotorAngle(int angle) {
+void setMotorAngle(int angle) {
    angle += 180;
    int steps = (abs(currentMotorAngle - angle) * 512) / 360;
    //512 == 360 degrees
@@ -293,27 +717,64 @@ void webServer() {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  Serial.println("T-SIMCAM: Inicializácia I2C na pinoch GPIO43 (SDA) a GPIO44 (SCL)");
+  delay(5000);
+
+      setupModem();
+    initSIM();
+    connectMobileData();
+    mqttPrepareLTE();
+    
+    delay(1000);
+    
+    // Connect using manual AT commands
+    if(!mqtt_connect_manualLTE()) {
+        Serial.println("MQTT connection failed!");
+        return;
+    }
+  modem.mqtt_set_callback(mqtt_callback);
+    
+  modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
 
   // Inicializácia I2C pre MCP23017
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // Inicializácia MCP23017
   if (!mcp.begin_I2C(0x20)) {
-    Serial.println("MCP23017 nebol nájdený na adrese 0x20! Skontroluj zapojenie alebo adresu.");
+    Serial.println("MCP23017 have not been found on 0x20!");
     while (1) delay(1000);
   }
-  mcp.pinMode(MCP_SDA_PIN, OUTPUT); // GPA0 ako SDA pre DS3231
-  mcp.pinMode(MCP_SCL_PIN, OUTPUT); // GPA1 ako SCL pre DS3231
-  mcp.digitalWrite(MCP_SDA_PIN, HIGH); // Simulácia pull-up
-  mcp.digitalWrite(MCP_SCL_PIN, HIGH);
-  Serial.println("MCP23017 pripravený pre bit-banging I2C k DS3231.");
+  mcpReady = true;
+
+  bme680Ready = false;
+  if(bme.begin(0x77, &Wire)) {
+    bme680Ready = true;
+  } 
+ 
+  if(bme680Ready) {
+    bme.setTemperatureOversampling(BME680_OS_8X);
+    bme.setHumidityOversampling(BME680_OS_2X);
+    bme.setPressureOversampling(BME680_OS_4X);
+    bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+    bme.setGasHeater(320, 150); // 320°C for 150 ms
+    delay(2000);
+      
+    if (!bme.performReading()) {
+      Serial.println("WARNING: BME680 detected but failed to perform reading");
+      bme680Ready = false;
+    }
+  } 
+  else {
+    Serial.println("WARNING: BME680 not found at address 0x77");
+  }
+
+  if(!rtc.begin(&Wire)) {
+    Serial.println("WARNING: RTC DS3231 not found at 0x68");
+  }
 
   mcp.pinMode(MCP_PIR_PIN, INPUT);
 
   webServer();
 
+  //motor 1
   mcp.pinMode(OUTPUT1, OUTPUT);
   mcp.pinMode(OUTPUT2, OUTPUT);
   mcp.pinMode(OUTPUT3, OUTPUT);
@@ -326,6 +787,23 @@ void loop() {
   //printTime(now);
   
   int pirState = mcp.digitalRead(MCP_PIR_PIN);
+
+  if (millis() > check_connect_millis) {
+        check_connect_millis = millis() + 10000UL;
+        
+        modem.sendAT("+CMQTTDISC?"); // som pripojeny?
+        if(modem.waitResponse(2000) != 1) {
+            Serial.println("MQTT disconnected, reconnecting...");
+            mqtt_connect_manualLTE();
+        }
+        else {
+            String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) + "s";
+            
+            if(!modem.mqtt_publish(mqtt_client_id, motion_topic, message.c_str(), 1)) {
+                Serial.println("Publish failed");
+            }
+        }
+    }
   
   delay(1000);
   if(lastMotionStatus != pirState) {
@@ -340,9 +818,31 @@ void loop() {
     lastMotionStatus = pirState;
   }
 
+  if(bme680Ready) {
+    unsigned long endTime = bme.beginReading();
+    if (endTime == 0) {
+      Serial.println(F("Failed to begin reading"));
+      return;
+    }
+    delay(1000); // počkaj na dokončenie čítania
+    float tlak = bme.pressure / 100.0; // hPa
+    float vlhkost = bme.humidity; // %
+    float teplota = bme.temperature; // °C
+    float plyn = bme.gas_resistance / 1000.0; // KOhms
+    float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+
+    String sprava = String(bme.temperature);
+    if (modem.mqtt_publish(mqtt_client_id, temperature_topic, sprava.c_str(), 1)) {
+      Serial.println("Message published successfully");
+    } else {
+      Serial.println("Message publishing failed");
+    }
+  }
+
   Serial.clearWriteError();
+  modem.mqtt_handle();
 }
-*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /* //////////////////////////////////////////// motor test code //////////////////////////////////////////////
 #define OUTPUT1   4               // Connected to the Blue coloured wire

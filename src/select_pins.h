@@ -17,13 +17,31 @@
 #define HREF_GPIO_NUM    7
 #define PCLK_GPIO_NUM    13
 
-// Power / PCIe
+// Power / PCIe (Modem pins)
 #define PWR_ON_PIN       1
 #define PCIE_PWR_PIN     48
 #define PCIE_RST_PIN     48
 #define PCIE_TX_PIN      45
 #define PCIE_RX_PIN      46
 #define PCIE_LED_PIN     21
+
+// Modem configuration
+#define MODEM_BAUDRATE              115200
+#define MODEM_START_WAIT_MS         3000
+#define MODEM_PWRON_PWMS            100
+#define MODEM_PWROFF_PWMS   3000
+#define MODEM_RESET_LEVEL           HIGH
+
+// Serial port for modem AT commands
+#define SerialAT                    Serial1
+
+// GPS configuration
+#define MODEM_GPS_ENABLE_GPIO       4
+#define MODEM_GPS_ENABLE_LEVEL      1
+
+// LED indicator
+#define BOARD_LED_PIN               21
+#define LED_ON                      HIGH
 
 // SD
 #define SD_MISO_PIN      40
@@ -47,14 +65,10 @@
 // MCP23017 Pins
 #define MCP_ADDRESS 0x20
 
-#define MCP_PIR_PIN 2   // GPA2 na MCP23017 (kam pripojíš PIR výstup)
+#define MCP_PIR_PIN 2   // GPA2 na MCP23017
 
 #define MCP_SDA_PIN 0   // GPA0 na MCP23017 (SDA pre DS3231)
 #define MCP_SCL_PIN 1   // GPA1 na MCP23017 (SCL pre DS3231)
-
-// BME680 bit-banging I2C na MCP23017 port B
-#define BME_SDA_PIN 15  // GPB7 na MCP23017 (SDA pre BME680)
-#define BME_SCL_PIN 14  // GPB6 na MCP23017 (SCL pre BME680)
 
 #define OUTPUT1   4
 #define OUTPUT2   5
