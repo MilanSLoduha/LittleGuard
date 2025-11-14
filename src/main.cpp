@@ -30,11 +30,11 @@ bool mqtt_connect_manual() {
     modem.sendAT("+CMQTTDISC=0,120"); // odpoj vsetky existujuce pripojenia
     modem.waitResponse(5000);
     delay(500);
-    
+
     modem.sendAT("+CMQTTREL=0"); // Uvolneine vsetkych zdrojov klienta
     modem.waitResponse(5000);
     delay(500);
-    
+
     modem.sendAT("+CMQTTSTOP"); // Stop MQTT sluzby
     modem.waitResponse(5000);
     delay(2000);
@@ -51,44 +51,44 @@ bool mqtt_connect_manual() {
         Serial.println("Failed to acquire MQTT client");
         return false;
     }
-    
+
     modem.sendAT("+CMQTTCFG=\"version\",0,4"); // nastav MQTT verziu 4 = 3.1.1
     if(modem.waitResponse() != 1) {
         Serial.println("Failed to set MQTT version");
         return false;
     }
 
-    modem.sendAT("+CSSLCFG=\"sslversion\",0,4");  // nastav SSL verziu 4 = TLS 1.2
-    if(modem.waitResponse() != 1) {
-        Serial.println("Failed to set SSL version");
+    modem.sendAT("+CSSLCFG=\"sslversion\",0,4");  // nastav SSL verziu 4 =
+TLS 1.2 if(modem.waitResponse() != 1) { Serial.println("Failed to set SSL
+version");
     }
-    
+
     modem.sendAT("+CSSLCFG=\"enableSNI\",0,1");  // Povol Server Name Indication
     if(modem.waitResponse() != 1) {
         Serial.println("Failed to enable SNI");
     }
-  
-    modem.sendAT("+CSSLCFG=\"authmode\",0,0");  // 0 = bez autentigikacie servera
-    if(modem.waitResponse() != 1) {
-        Serial.println("Failed to set auth mode");
+
+    modem.sendAT("+CSSLCFG=\"authmode\",0,0");  // 0 = bez autentigikacie
+servera if(modem.waitResponse() != 1) { Serial.println("Failed to set auth
+mode");
     }
-    
+
     Serial.println("Enabling SSL for MQTT...");
-    modem.sendAT("+CMQTTSSLCFG=0,0");  // SSL pre MQTT - client_id=0, ssl_ctx_index=0
-    if(modem.waitResponse() != 1) {
-        Serial.println("SSL config failed!");
-        return false;
+    modem.sendAT("+CMQTTSSLCFG=0,0");  // SSL pre MQTT - client_id=0,
+ssl_ctx_index=0 if(modem.waitResponse() != 1) { Serial.println("SSL config
+failed!"); return false;
     }
-    
-    modem.sendAT("+CMQTTCONNECT=0,\"tcp://", broker_host, ":", String(broker_port), 
+
+    modem.sendAT("+CMQTTCONNECT=0,\"tcp://", broker_host, ":",
+String(broker_port),
                  "\",60,1,\"", broker_username, "\",\"", broker_password, "\"");
-    
+
     if(modem.waitResponse(30000) != 1) {
         Serial.println(" MQTT SSL connection failed!");
-        
+
         modem.sendAT("+CMQTTCONNECT?"); // Debug info
         modem.waitResponse(2000);
-        
+
         return false;
     }
 
@@ -107,11 +107,11 @@ void setup() {
     delay(2000);
 
     SerialAT.begin(115200, SERIAL_8N1, PCIE_RX_PIN, PCIE_TX_PIN);
-    
+
     pinMode(PWR_ON_PIN, OUTPUT);
     digitalWrite(PWR_ON_PIN, HIGH);
     delay(300);
-    
+
 
     pinMode(PCIE_PWR_PIN, OUTPUT);
     digitalWrite(PCIE_PWR_PIN, LOW);
@@ -119,7 +119,7 @@ void setup() {
     digitalWrite(PCIE_PWR_PIN, HIGH);
     delay(MODEM_PWRON_PWMS);
     digitalWrite(PCIE_PWR_PIN, LOW);
-    
+
     int retry = 0;
     while (!modem.testAT(1000)) {
         Serial.print(".");
@@ -133,7 +133,7 @@ void setup() {
             retry = 0;
         }
     }
-    
+
     SimStatus sim = SIM_ERROR;
     while (sim != SIM_READY) {
         sim = modem.getSimStatus();
@@ -144,52 +144,51 @@ void setup() {
         }
         delay(1000);
     }
-    
+
     if(!modem.setNetworkAPN("o2internet")) {
         Serial.println("trying 'internet.o2active'");
         modem.setNetworkAPN("internet.o2active");
     }
-    
+
     //cakanie na siet
     int16_t sq;
     RegStatus status = REG_NO_RESULT;
-    while (status == REG_NO_RESULT || status == REG_SEARCHING || status == REG_UNREGISTERED) {
-      status = modem.getRegistrationStatus();
-      if(status == REG_UNREGISTERED || status == REG_SEARCHING) {
-        sq = modem.getSignalQuality();
+    while (status == REG_NO_RESULT || status == REG_SEARCHING || status ==
+REG_UNREGISTERED) { status = modem.getRegistrationStatus(); if(status ==
+REG_UNREGISTERED || status == REG_SEARCHING) { sq = modem.getSignalQuality();
         delay(1000);
-      } 
+      }
       else if(status == REG_DENIED) {
           Serial.println("\nNetwork registration denied!");
           return;
-      } 
+      }
       else if(status == REG_OK_ROAMING) {
           Serial.println("\nRegistered (roaming)");
           break;
       }
       else break;
     }
-    
+
     Serial.print("Signal quality: ");
     Serial.println(modem.getSignalQuality());
-    
+
     // Activate network
     if(!modem.setNetworkActive()) {
         Serial.println(" Failed to activate network");
     }
 
-    
+
     modem.sendAT("+CMQTTSTOP"); // Zrus existujuci session
     modem.waitResponse(5000);
-    
+
     bool enableSSL = true;
     bool enableSNI = true;
     modem.mqtt_begin(enableSSL, enableSNI);
-    
+
     modem.mqtt_set_certificate(HivemqRootCA);
-    
+
     delay(1000);
-    
+
     // Connect using manual AT commands
     if(!mqtt_connect_manual()) {
         Serial.println("MQTT connection failed!");
@@ -197,34 +196,35 @@ void setup() {
     }
 
     modem.mqtt_set_callback(mqtt_callback);
-    
+
     modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
 }
 
 void loop() {
     if (millis() > check_connect_millis) {
         check_connect_millis = millis() + 10000UL;
-        
+
         modem.sendAT("+CMQTTDISC?"); // som pripojeny?
         if(modem.waitResponse(2000) != 1) {
             Serial.println("MQTT disconnected, reconnecting...");
             mqtt_connect_manual();
         }
         else {
-            String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) + "s";
-            
-            if(!modem.mqtt_publish(mqtt_client_id, motion_topic, message.c_str(), 1)) {
-                Serial.println("Publish failed");
+            String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) +
+"s";
+
+            if(!modem.mqtt_publish(mqtt_client_id, motion_topic,
+message.c_str(), 1)) { Serial.println("Publish failed");
             }
         }
     }
-    
+
     modem.mqtt_handle();
     delay(100);
 }
 */ //////////////////////////////////////////////////////////////////////////////////////////////
 
-/* /////////////////////////////////////////////// send sms ///////////////////////////////////////////////
+/* /////////////////////////////////////////////// send sms //////////////////////////////////////////////
 
 #define TINY_GSM_MODEM_A7670
 #define LILYGO_T_SIMCAM
@@ -247,8 +247,10 @@ TinyGsm modem(SerialAT);
 #endif
 
 
-// It depends on the operator whether to set up an APN. If some operators do not set up an APN,
-// they will be rejected when registering for the network. You need to ask the local operator for the specific APN.
+// It depends on the operator whether to set up an APN. If some operators do not
+set up an APN,
+// they will be rejected when registering for the network. You need to ask the
+local operator for the specific APN.
 // APNs from other operators are welcome to submit PRs for filling.
 // #define NETWORK_APN     "CHN-CT"             //CHN-CT: China Telecom
 
@@ -322,9 +324,8 @@ void setup()
     int16_t sq ;
     Serial.print("Wait for the modem to register with the network.");
     RegStatus status = REG_NO_RESULT;
-    while (status == REG_NO_RESULT || status == REG_SEARCHING || status == REG_UNREGISTERED) {
-        status = modem.getRegistrationStatus();
-        switch (status) {
+    while (status == REG_NO_RESULT || status == REG_SEARCHING || status ==
+REG_UNREGISTERED) { status = modem.getRegistrationStatus(); switch (status) {
         case REG_UNREGISTERED:
         case REG_SEARCHING:
             sq = modem.getSignalQuality();
@@ -332,15 +333,10 @@ void setup()
             delay(1000);
             break;
         case REG_DENIED:
-            Serial.println("Network registration was rejected, please check if the APN is correct");
-            return ;
-        case REG_OK_HOME:
-            Serial.println("Online registration successful");
-            break;
-        case REG_OK_ROAMING:
-            Serial.println("Network registration successful, currently in roaming mode");
-            break;
-        default:
+            Serial.println("Network registration was rejected, please check if
+the APN is correct"); return ; case REG_OK_HOME: Serial.println("Online
+registration successful"); break; case REG_OK_ROAMING: Serial.println("Network
+registration successful, currently in roaming mode"); break; default:
             Serial.printf("Registration Status:%d\n", status);
             delay(1000);
             break;
@@ -374,17 +370,17 @@ void loop()
 }
 */
 
-/* /////////////////////////////////////////////// MQTT TEST CODE ////////////////////////////////////////////
-#include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_MCP23X17.h>
-#include <RTClib.h>
-#include "select_pins.h"
-#include "sd_storage.h"
-#include "camera.h"
-#include "rtc_time.h"
-#include <stepper.h>
-#include "WiFi.h"
+/* /////////////////////////////////////////////// MQTT TEST CODE //////////////////////////////////////// 
+#include <Arduino.h> 
+#include <Wire.h> 
+#include <Adafruit_MCP23X17.h> 
+#include <RTClib.h> 
+#include "select_pins.h" 
+#include "sd_storage.h" 
+#include "camera.h" 
+#include"rtc_time.h" 
+#include <stepper.h> 
+#include "WiFi.h" 
 #include "secrets.h"
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
@@ -396,7 +392,7 @@ void loop()
 #include "Adafruit_BME680.h"
 #undef sensor_t
 
- 
+
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -418,16 +414,16 @@ const char* settings_topic = SETTINGS_TOPIC;
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
+
   unsigned long wifiTimeout = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
     delay(500);
     Serial.print(".");
   }
   Serial.println();
-  
+
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("WiFi connected!");
     Serial.print("IP address: ");
@@ -472,11 +468,11 @@ void setup() {
 
 
   bme680Ready = false;
-  
+
   if(bme.begin(0x77, &Wire)) {
     bme680Ready = true;
-  } 
- 
+  }
+
   if(bme680Ready) {
     bme.setTemperatureOversampling(BME680_OS_8X);
     bme.setHumidityOversampling(BME680_OS_2X);
@@ -484,8 +480,8 @@ void setup() {
     bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
     bme.setGasHeater(320, 150); // 320°C for 150 ms
     delay(2000);
-      
-   
+
+
     if (!bme.performReading()) {
       Serial.println("WARNING: BME680 detected but failed to perform reading");
       bme680Ready = false;
@@ -493,8 +489,8 @@ void setup() {
   } else {
     Serial.println("WARNING: BME680 not found at address 0x77");
   }
-  
-  
+
+
   Serial.println("\n=== Setup complete! ===");
 }
 
@@ -525,17 +521,17 @@ void loop() {
     Serial.println(F("Failed to begin reading"));
     return;
   }
-  
+
 
   //Serial.print(millis());
   //Serial.println(endTime);
-  
+
   float tlak = bme.pressure / 100.0; // hPa
   float vlhkost = bme.humidity; // %
   float teplota = bme.temperature; // °C
   float plyn = bme.gas_resistance / 1000.0; // KOhms
   float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
-  
+
   //odosielanie
   String sprava = String(bme.temperature);
   if (client.publish(temperature_topic, sprava.c_str())) {
@@ -566,53 +562,55 @@ void loop() {
     }
   }
   client.loop();
-  
+
   Serial.println();
   delay(10000);
 }
 */ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
- /////////////////////////////////////////////// MAIN CODE /////////////////////////////////////////////////
+/////////////////////////////////////////////// MAIN CODE ////////////////////////////////////////////////////
 #define TINY_GSM_MODEM_A7670
 #define TINY_GSM_RX_BUFFER 1024
 #define DUMP_AT_COMMANDS
 
-#include <Arduino.h>
-#include <Wire.h>
 #include <Adafruit_MCP23X17.h>
-#include <RTClib.h>
-#include "select_pins.h"
-#include "sd_storage.h"
-#include "camera.h"
-#include "rtc_time.h"
-#include <stepper.h>
-#include "WiFi.h"
-#include "secrets.h"
+#include <Arduino.h>
 #include <PubSubClient.h>
-#include <WiFiClientSecure.h>
-#include "esp_task_wdt.h"
-#include <TinyGsmClient.h>
+#include <RTClib.h>
 #include <StreamDebugger.h>
-#include "mqtt_server.h"
-#include "modem.h"
+#include <TinyGsmClient.h>
+#include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <stepper.h>
 
+#include "WiFi.h"
+#include "camera.h"
+#include "esp_task_wdt.h"
+#include "modem.h"
+#include "mqtt_server.h"
+#include "rtc_time.h"
+#include "sd_storage.h"
+#include "secrets.h"
+#include "select_pins.h"
+
+#define SerialMon Serial
+#define SMS_TARGET "+421908199904"
 
 StreamDebugger debugger(SerialAT, Serial);
 TinyGsm modem(debugger);
 
+int lastMotionStatus = -1;
+int currentMotorAngle = 0; // Aktuálna pozícia motora
 
- int lastMotionStatus = -1;
- int currentMotorAngle = 0;  // Aktuálna pozícia motora
-
- // BME680 musí byť za camera.h kvôli konfliktu sensor_t
+// BME680 musí byť za camera.h kvôli konfliktu sensor_t
 // senzor v namespace
 #define sensor_t adafruit_sensor_t
 #include "Adafruit_BME680.h"
 #undef sensor_t
- 
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
+bool wifiConnected;
 
 Adafruit_MCP23X17 mcp;
 bool mcpReady = false;
@@ -621,327 +619,247 @@ bool rtcReady = false;
 Adafruit_BME680 bme;
 bool bme680Ready = false;
 #define SEALEVELPRESSURE_HPA (1013.25)
-#define BME680_ADDR 0x77  //BME680
+#define BME680_ADDR 0x77
 
-// check_connect_millis je definovaná v modem.cpp
- 
- void startCameraServer();
- 
- // Funkcia na ovládanie motora
+void startCameraServer();
+
 void setMotorAngle(int angle) {
-   angle += 180;
-   int steps = (abs(currentMotorAngle - angle) * 512) / 360;
-   //512 == 360 degrees
-   // Calculate steps needed
+	angle += 180;
+	int steps = (abs(currentMotorAngle - angle) * 512) / 360;
+	// 512 == 360 degrees
 
-  if(currentMotorAngle > angle) {
-    for(int j = 0; j<steps; j++){
-      mcp.digitalWrite(OUTPUT1, HIGH);
-      mcp.digitalWrite(OUTPUT2, LOW);
-      mcp.digitalWrite(OUTPUT3, LOW);
-      mcp.digitalWrite(OUTPUT4, HIGH);
-      delay(DELAY);
-      mcp.digitalWrite(OUTPUT1, LOW);
-      mcp.digitalWrite(OUTPUT2, LOW);
-      mcp.digitalWrite(OUTPUT3, HIGH);
-      mcp.digitalWrite(OUTPUT4, HIGH);
-      delay(DELAY);
-      mcp.digitalWrite(OUTPUT1, LOW);
-      mcp.digitalWrite(OUTPUT2, HIGH);
-      mcp.digitalWrite(OUTPUT3, HIGH);
-      mcp.digitalWrite(OUTPUT4, LOW);
-      delay(DELAY);
-      mcp.digitalWrite(OUTPUT1, HIGH);
-      mcp.digitalWrite(OUTPUT2, HIGH);
-      mcp.digitalWrite(OUTPUT3, LOW);
-      mcp.digitalWrite(OUTPUT4, LOW);
-      delay(DELAY);
-    }
-  }
-  else {
-    for(int i = 0; i<steps; i++)
-    {
-      mcp.digitalWrite(OUTPUT1, HIGH);
-      mcp.digitalWrite(OUTPUT2, HIGH);
-      mcp.digitalWrite(OUTPUT3, LOW);
-      mcp.digitalWrite(OUTPUT4, LOW);
-      delay(DELAY);
-      mcp.digitalWrite(OUTPUT1, LOW);
-      mcp.digitalWrite(OUTPUT2, HIGH);
-      mcp.digitalWrite(OUTPUT3, HIGH);
-      mcp.digitalWrite(OUTPUT4, LOW);
-      delay(DELAY);
-      mcp.digitalWrite(OUTPUT1, LOW);
-      mcp.digitalWrite(OUTPUT2, LOW);
-      mcp.digitalWrite(OUTPUT3, HIGH);
-      mcp.digitalWrite(OUTPUT4, HIGH);
-      delay(DELAY);
-      mcp.digitalWrite(OUTPUT1, HIGH);
-      mcp.digitalWrite(OUTPUT2, LOW);
-      mcp.digitalWrite(OUTPUT3, LOW);
-      mcp.digitalWrite(OUTPUT4, HIGH);
-      delay(DELAY);
-    }
-  }
-  currentMotorAngle = angle;  
-
+	if (currentMotorAngle > angle) {
+		for (int j = 0; j < steps; j++) {
+			mcp.digitalWrite(OUTPUT1, HIGH);
+			mcp.digitalWrite(OUTPUT2, LOW);
+			mcp.digitalWrite(OUTPUT3, LOW);
+			mcp.digitalWrite(OUTPUT4, HIGH);
+			delay(DELAY);
+			mcp.digitalWrite(OUTPUT1, LOW);
+			mcp.digitalWrite(OUTPUT2, LOW);
+			mcp.digitalWrite(OUTPUT3, HIGH);
+			mcp.digitalWrite(OUTPUT4, HIGH);
+			delay(DELAY);
+			mcp.digitalWrite(OUTPUT1, LOW);
+			mcp.digitalWrite(OUTPUT2, HIGH);
+			mcp.digitalWrite(OUTPUT3, HIGH);
+			mcp.digitalWrite(OUTPUT4, LOW);
+			delay(DELAY);
+			mcp.digitalWrite(OUTPUT1, HIGH);
+			mcp.digitalWrite(OUTPUT2, HIGH);
+			mcp.digitalWrite(OUTPUT3, LOW);
+			mcp.digitalWrite(OUTPUT4, LOW);
+			delay(DELAY);
+		}
+	} else {
+		for (int i = 0; i < steps; i++) {
+			mcp.digitalWrite(OUTPUT1, HIGH);
+			mcp.digitalWrite(OUTPUT2, HIGH);
+			mcp.digitalWrite(OUTPUT3, LOW);
+			mcp.digitalWrite(OUTPUT4, LOW);
+			delay(DELAY);
+			mcp.digitalWrite(OUTPUT1, LOW);
+			mcp.digitalWrite(OUTPUT2, HIGH);
+			mcp.digitalWrite(OUTPUT3, HIGH);
+			mcp.digitalWrite(OUTPUT4, LOW);
+			delay(DELAY);
+			mcp.digitalWrite(OUTPUT1, LOW);
+			mcp.digitalWrite(OUTPUT2, LOW);
+			mcp.digitalWrite(OUTPUT3, HIGH);
+			mcp.digitalWrite(OUTPUT4, HIGH);
+			delay(DELAY);
+			mcp.digitalWrite(OUTPUT1, HIGH);
+			mcp.digitalWrite(OUTPUT2, LOW);
+			mcp.digitalWrite(OUTPUT3, LOW);
+			mcp.digitalWrite(OUTPUT4, HIGH);
+			delay(DELAY);
+		}
+	}
+	currentMotorAngle = angle;
 }
 
 void webServer() {
-    String ssid;
-    uint8_t mac[8];
-    esp_efuse_mac_get_default(mac);
-    ssid = WIFI_AP_SSID;
-    ssid += mac[0] + mac[1] + mac[2];
-    //WiFi.mode(WIFI_MODE_APSTA); //AP
-    //WiFi.softAP(ssid.c_str(), WIFI_AP_PASSWORD);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
+	String ssid;
+	uint8_t mac[8];
+	esp_efuse_mac_get_default(mac);
+	ssid = WIFI_AP_SSID;
+	ssid += mac[0] + mac[1] + mac[2];
+	// WiFi.mode(WIFI_MODE_APSTA); //AP
+	// WiFi.softAP(ssid.c_str(), WIFI_AP_PASSWORD);
+	WiFi.mode(WIFI_STA);
+	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+	while (WiFi.status() != WL_CONNECTED) {
+		delay(500);
+		Serial.print(".");
+	}
 
-    Serial.println("");
-    Serial.print("Connected to WiFi. IP: ");
+	Serial.println("");
+	Serial.print("Connected to WiFi. IP: ");
+	Serial.println(WiFi.localIP());
+
+	setupCamera();
+
+	startCameraServer();
+	Serial.print("Camera Ready! Use 'http://");
+	Serial.print(WiFi.localIP());
+	Serial.println("' to connect");
+}
+
+void setupSensors() {
+	bme680Ready = false;
+	if (bme.begin(0x77, &Wire)) {
+		bme680Ready = true;
+	}
+
+	if (bme680Ready) {
+		bme.setTemperatureOversampling(BME680_OS_8X);
+		bme.setHumidityOversampling(BME680_OS_2X);
+		bme.setPressureOversampling(BME680_OS_4X);
+		bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+		bme.setGasHeater(320, 150); // 320°C for 150 ms
+
+		if (!bme.performReading()) {
+			Serial.println("WARNING: BME680 detected but failed to perform reading");
+			bme680Ready = false;
+		}
+	} else {
+		Serial.println("WARNING: BME680 not found at address 0x77");
+	}
+
+	if (!rtc.begin(&Wire)) {
+		Serial.println("WARNING: RTC DS3231 not found at 0x68");
+	}
+
+	mcp.pinMode(MCP_PIR_PIN, INPUT);
+
+	// motor 1
+	mcp.pinMode(OUTPUT1, OUTPUT);
+	mcp.pinMode(OUTPUT2, OUTPUT);
+	mcp.pinMode(OUTPUT3, OUTPUT);
+	mcp.pinMode(OUTPUT4, OUTPUT);
+}
+
+bool wifiSetup() {
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  unsigned long wifiTimeout = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
     Serial.println(WiFi.localIP());
-
-    
-    setupCamera();
-    
-    startCameraServer();
-    Serial.print("Camera Ready! Use 'http://");
-    Serial.print(WiFi.localIP());
-    Serial.println("' to connect");
+    return true;
+  } else {
+    Serial.println("WiFi connection FAILED - continuing without WiFi");
+    return false;
+  }
 }
 
 void setup() {
-  Serial.begin(115200);
-  delay(5000);
+	Serial.begin(115200);
+	delay(5000);
 
-      setupModem();
-    initSIM();
-    connectMobileData();
-    mqttPrepareLTE();
-    
-    delay(1000);
-    
-    // Connect using manual AT commands
-    if(!mqtt_connect_manualLTE()) {
-        Serial.println("MQTT connection failed!");
-        return;
-    }
-  modem.mqtt_set_callback(mqtt_callback);
-    
-  modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
+	wifiConnected = wifiSetup();
+	setupModem();
+	initSIM();
+	connectMobileData();
+	mqttPrepareLTE();
 
-  // Inicializácia I2C pre MCP23017
-  Wire.begin(SDA_PIN, SCL_PIN);
+	// Connect using manual AT commands
+	if (!mqtt_connect_manualLTE()) {
+		Serial.println("MQTT connection failed!");
+		return;
+	}
+	modem.mqtt_set_callback(mqtt_callback);
 
-  if (!mcp.begin_I2C(0x20)) {
-    Serial.println("MCP23017 have not been found on 0x20!");
-    while (1) delay(1000);
-  }
-  mcpReady = true;
+	modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
+	modem.mqtt_subscribe(mqtt_client_id, command_topic);
+  modem.mqtt_subscribe(mqtt_client_id, stream_topic);
+  modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
 
-  bme680Ready = false;
-  if(bme.begin(0x77, &Wire)) {
-    bme680Ready = true;
-  } 
- 
-  if(bme680Ready) {
-    bme.setTemperatureOversampling(BME680_OS_8X);
-    bme.setHumidityOversampling(BME680_OS_2X);
-    bme.setPressureOversampling(BME680_OS_4X);
-    bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-    bme.setGasHeater(320, 150); // 320°C for 150 ms
-    delay(2000);
-      
-    if (!bme.performReading()) {
-      Serial.println("WARNING: BME680 detected but failed to perform reading");
-      bme680Ready = false;
-    }
-  } 
-  else {
-    Serial.println("WARNING: BME680 not found at address 0x77");
-  }
+	// Inicializácia I2C pre MCP23017
+	Wire.begin(SDA_PIN, SCL_PIN);
 
-  if(!rtc.begin(&Wire)) {
-    Serial.println("WARNING: RTC DS3231 not found at 0x68");
-  }
+	if (!mcp.begin_I2C(0x20)) {
+		Serial.println("MCP23017 have not been found on 0x20!");
+	}
+	mcpReady = true;
 
-  mcp.pinMode(MCP_PIR_PIN, INPUT);
+	if (mcpReady) {
+    setupSensors();
+	}
 
-  webServer();
+	webServer();
 
-  //motor 1
-  mcp.pinMode(OUTPUT1, OUTPUT);
-  mcp.pinMode(OUTPUT2, OUTPUT);
-  mcp.pinMode(OUTPUT3, OUTPUT);
-  mcp.pinMode(OUTPUT4, OUTPUT);
+  bool res = modem.sendSMS(SMS_TARGET, String("SDADASDASD"));  
+  Serial.println(res ? "" : "fail");
+
+  cameraReady = setupCamera();
 }
-
 
 void loop() {
-  DateTime now;
-  //printTime(now);
-  
-  int pirState = mcp.digitalRead(MCP_PIR_PIN);
+	DateTime now;
+	// printTime(now);
 
-  if (millis() > check_connect_millis) {
-        check_connect_millis = millis() + 10000UL;
-        
-        modem.sendAT("+CMQTTDISC?"); // som pripojeny?
-        if(modem.waitResponse(2000) != 1) {
-            Serial.println("MQTT disconnected, reconnecting...");
-            mqtt_connect_manualLTE();
-        }
-        else {
-            String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) + "s";
-            
-            if(!modem.mqtt_publish(mqtt_client_id, motion_topic, message.c_str(), 1)) {
-                Serial.println("Publish failed");
-            }
-        }
-    }
-  
-  delay(1000);
-  if(lastMotionStatus != pirState) {
-    
-    if(pirState == HIGH) {
-      Serial.println("Pohyb detekovaný!");
-    } 
-    else {
-      Serial.println("Žiadny pohyb.");
-    }
-    
-    lastMotionStatus = pirState;
-  }
+	int pirState = mcp.digitalRead(MCP_PIR_PIN);
 
-  if(bme680Ready) {
-    unsigned long endTime = bme.beginReading();
-    if (endTime == 0) {
-      Serial.println(F("Failed to begin reading"));
-      return;
-    }
-    delay(1000); // počkaj na dokončenie čítania
-    float tlak = bme.pressure / 100.0; // hPa
-    float vlhkost = bme.humidity; // %
-    float teplota = bme.temperature; // °C
-    float plyn = bme.gas_resistance / 1000.0; // KOhms
-    float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+	if (millis() > check_connect_millis) {
+		check_connect_millis = millis() + 10000UL;
 
-    String sprava = String(bme.temperature);
-    if (modem.mqtt_publish(mqtt_client_id, temperature_topic, sprava.c_str(), 1)) {
-      Serial.println("Message published successfully");
-    } else {
-      Serial.println("Message publishing failed");
-    }
-  }
+		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
+		if (modem.waitResponse(2000) != 1) {
+			Serial.println("MQTT disconnected, reconnecting...");
+			mqtt_connect_manualLTE();
+		} else {
+			String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) + "s";
 
-  Serial.clearWriteError();
-  modem.mqtt_handle();
+			if (!modem.mqtt_publish(mqtt_client_id, motion_topic, message.c_str(), 1)) {
+				Serial.println("Publish failed");
+			}
+		}
+	}
+
+	delay(1000);
+	if (lastMotionStatus != pirState) {
+		if (pirState == HIGH) {
+			Serial.println("Pohyb detekovaný!");
+		} else {
+			Serial.println("Žiadny pohyb.");
+		}
+
+		lastMotionStatus = pirState;
+	}
+
+	if (bme680Ready) {
+		unsigned long endTime = bme.beginReading();
+		if (endTime == 0) {
+			Serial.println(F("Failed to begin reading"));
+			return;
+		}
+		delay(1000);                                                   // počkaj na dokončenie čítania
+		float tlak = bme.pressure / 100.0;                             // hPa
+		float vlhkost = bme.humidity;                                  // %
+		float teplota = bme.temperature;                               // °C
+		float plyn = bme.gas_resistance / 1000.0;                      // KOhms
+		float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+
+		String sprava = String(bme.temperature);
+		if (!modem.mqtt_publish(mqtt_client_id, temperature_topic, sprava.c_str(), 1)) {
+			Serial.println("Message publishing failed");
+		}
+	}
+
+	Serial.clearWriteError();
+	modem.mqtt_handle();
 }
- ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* //////////////////////////////////////////// motor test code //////////////////////////////////////////////
-#define OUTPUT1   4               // Connected to the Blue coloured wire
-#define OUTPUT2   5                // Connected to the Pink coloured wire
-#define OUTPUT3   6                // Connected to the Yellow coloured wire
-#define OUTPUT4   7                // Connected to the Orange coloured wire
-#define DELAY 2                   // delay after every step
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("T-SIMCAM: Inicializácia I2C na pinoch GPIO43 (SDA) a GPIO44 (SCL)");
-
-  // Inicializácia I2C pre MCP23017
-  Wire.begin(SDA_PIN, SCL_PIN);
-
-  // Inicializácia MCP23017
-  if (!mcp.begin_I2C(0x20)) {
-    Serial.println("MCP23017 nebol nájdený na adrese 0x20! Skontroluj zapojenie alebo adresu.");
-    while (1) delay(1000);
-  }
-  mcp.pinMode(MCP_SDA_PIN, OUTPUT); // GPA0 ako SDA pre DS3231
-  mcp.pinMode(MCP_SCL_PIN, OUTPUT); // GPA1 ako SCL pre DS3231
-  mcp.digitalWrite(MCP_SDA_PIN, HIGH); // Simulácia pull-up
-  mcp.digitalWrite(MCP_SCL_PIN, HIGH);
-  Serial.println("MCP23017 pripravený pre bit-banging I2C k DS3231.");
-
-  mcp.pinMode(OUTPUT1, OUTPUT);
-  mcp.pinMode(OUTPUT2, OUTPUT);
-  mcp.pinMode(OUTPUT3, OUTPUT);
-  mcp.pinMode(OUTPUT4, OUTPUT);
-}
-void loop() {
-  // Rotation in one direction, one full rotation in full-step operation Mode
-  for(int i = 0; i<512; i++)
-  {
-    mcp.digitalWrite(OUTPUT1, HIGH);
-    mcp.digitalWrite(OUTPUT2, HIGH);
-    mcp.digitalWrite(OUTPUT3, LOW);
-    mcp.digitalWrite(OUTPUT4, LOW);
-    delay(DELAY);
-    mcp.digitalWrite(OUTPUT1, LOW);
-    mcp.digitalWrite(OUTPUT2, HIGH);
-    mcp.digitalWrite(OUTPUT3, HIGH);
-    mcp.digitalWrite(OUTPUT4, LOW);
-    delay(DELAY);
-    mcp.digitalWrite(OUTPUT1, LOW);
-    mcp.digitalWrite(OUTPUT2, LOW);
-    mcp.digitalWrite(OUTPUT3, HIGH);
-    mcp.digitalWrite(OUTPUT4, HIGH);
-    delay(DELAY);
-    mcp.digitalWrite(OUTPUT1, HIGH);
-    mcp.digitalWrite(OUTPUT2, LOW);
-    mcp.digitalWrite(OUTPUT3, LOW);
-    mcp.digitalWrite(OUTPUT4, HIGH);
-    delay(DELAY);
-  }
-  mcp.digitalWrite(OUTPUT1, LOW);
-  mcp.digitalWrite(OUTPUT2, LOW);
-  mcp.digitalWrite(OUTPUT3, LOW);
-  mcp.digitalWrite(OUTPUT4, LOW);
-  delay(1000);
-  // Rotation in opposite direction, one full rotation in full-step operation Mode
-  for(int j = 0; j<512; j++)
-  {
-    mcp.digitalWrite(OUTPUT1, HIGH);
-    mcp.digitalWrite(OUTPUT2, LOW);
-    mcp.digitalWrite(OUTPUT3, LOW);
-    mcp.digitalWrite(OUTPUT4, HIGH);
-    delay(DELAY);
-    mcp.digitalWrite(OUTPUT1, LOW);
-    mcp.digitalWrite(OUTPUT2, LOW);
-    mcp.digitalWrite(OUTPUT3, HIGH);
-    mcp.digitalWrite(OUTPUT4, HIGH);
-    delay(DELAY);
-    mcp.digitalWrite(OUTPUT1, LOW);
-    mcp.digitalWrite(OUTPUT2, HIGH);
-    mcp.digitalWrite(OUTPUT3, HIGH);
-    mcp.digitalWrite(OUTPUT4, LOW);
-    delay(DELAY);
-    mcp.digitalWrite(OUTPUT1, HIGH);
-    mcp.digitalWrite(OUTPUT2, HIGH);
-    mcp.digitalWrite(OUTPUT3, LOW);
-    mcp.digitalWrite(OUTPUT4, LOW);
-    delay(DELAY);
-  }
-  mcp.digitalWrite(OUTPUT1, LOW);
-  mcp.digitalWrite(OUTPUT2, LOW);
-  mcp.digitalWrite(OUTPUT3, LOW);
-  mcp.digitalWrite(OUTPUT4, LOW);
-  delay(1000);
-}
-*/
-
-/* ////////////////////////////////////////////// Test ESP ///////////////////////////////////////////////////
-#include "FS.h"
-#include "HTTPClient.h"
-#include "SD.h"
-#include "WiFi.h"
-#include "select_pins.h"
+/* ////////////////////////////////////////////// Test ESP ////////////////////////////////////////////////
+#include "FS.h" #include
+"HTTPClient.h" #include "SD.h" #include "WiFi.h" #include "select_pins.h"
 #include "esp_camera.h"
 #include <Arduino.h>
 #include <WiFiAP.h>
@@ -989,7 +907,7 @@ void setup()
 
 void loop()
 {
-    //check_sound(); 
+    //check_sound();
     Serial.print(".....");
     delay(1000);
 }
@@ -1077,7 +995,8 @@ void check_sound(void)
 {
     size_t bytes_read;
     j = j + 1;
-    i2s_read(I2S_NUM_0, (char *)buffer, BUFFER_SIZE, &bytes_read, portMAX_DELAY);
+    i2s_read(I2S_NUM_0, (char *)buffer, BUFFER_SIZE, &bytes_read,
+portMAX_DELAY);
 
     for (int i = 0; i < BUFFER_SIZE / 2; i++) {
         val1 = buffer[i * 2];
@@ -1107,16 +1026,15 @@ void check_sound(void)
         val_avg_1 = val_avg_1 / BUFFER_SIZE;
         all_val_avg = all_val_avg / BUFFER_SIZE;
 
-        if (val_max > define_max && val_avg > define_avg && all_val_zero2 > define_zero)
-            aloud = true;
-        else
-            aloud = false;
+        if (val_max > define_max && val_avg > define_avg && all_val_zero2 >
+define_zero) aloud = true; else aloud = false;
 
-        timelong_str = " high_max:" + String(val_max) + " high_avg:" + String(val_avg) + " all_val_zero2:" + String(all_val_zero2);
+        timelong_str = " high_max:" + String(val_max) + " high_avg:" +
+String(val_avg) + " all_val_zero2:" + String(all_val_zero2);
 
         if (aloud) {
-            timelong_str = timelong_str + " ##### ##### ##### ##### ##### #####";
-            Serial.println(timelong_str);
+            timelong_str = timelong_str + " ##### ##### ##### ##### #####
+#####"; Serial.println(timelong_str);
         }
 
         val_avg = 0;
@@ -1156,8 +1074,8 @@ void wifi_scan_connect(void)
             Serial.print(" (");
             Serial.print(WiFi.RSSI(i));
             Serial.print(")");
-            Serial.println((WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? " " : "*");
-            delay(10);
+            Serial.println((WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? " " :
+"*"); delay(10);
         }
     }
     Serial.println("");
@@ -1165,7 +1083,7 @@ void wifi_scan_connect(void)
 
     uint32_t last_m = millis();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    
+
     // Timeout 10 sekúnd na pripojenie
     uint32_t timeout = 10000;
     while (WiFi.status() != WL_CONNECTED && (millis() - last_m) < timeout) {
@@ -1173,13 +1091,13 @@ void wifi_scan_connect(void)
         vTaskDelay(100);
     }
     Serial.println("");
-    
+
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("WiFi connection failed - timeout!");
         Serial.println("Continuing without WiFi...");
         return;
     }
-    
+
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
@@ -1188,7 +1106,7 @@ void wifi_scan_connect(void)
     delay(100);
     String rsp;
     bool is_get_http = false;
-    
+
     // do {
     //     http_client.begin("https://www.baidu.com/");
     //     int http_code = http_client.GET();
@@ -1200,14 +1118,15 @@ void wifi_scan_connect(void)
     //             Serial.println(rsp);
     //             is_get_http = true;
     //         } else {
-    //             Serial.printf("fail to get http client,code:%d\n", http_code);
+    //             Serial.printf("fail to get http client,code:%d\n",
+http_code);
     //         }
     //     } else {
     //         Serial.println("HTTP GET failed. Try again");
     //     }
     //     delay(3000);
     // } while (!is_get_http);
-     
+
     // WiFi.disconnect();
     http_client.end();
 }
@@ -1322,9 +1241,9 @@ void camera_test()
     // }
     // delay(5000);
 }
-*/
+*/ /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* ///////////////////////////////////////// I2C Scanner cez MCP23017 ////////////////////////////////////////
+/* ///////////////////////////////////////// I2C Scanner cez MCP23017 /////////////////////////////////////
 
 #include <Wire.h>
 #include <Adafruit_MCP23X17.h>
@@ -1355,7 +1274,7 @@ void loop() {
 }
 */ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* ////////////////////////////////////////////// Test Camera ////////////////////////////////////////////////
+/* ////////////////////////////////////////////// Test Camera /////////////////////////////////////////////
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -1385,9 +1304,10 @@ void setup() {
 void loop() {
   Serial.print(".");
   delay(5000);
-}*//////////////////////////////////////////////////////////////////////////////////////////////////
+}
+*/ ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* /////////////////////////////////////////////// Test PIR //////////////////////////////////////////////////
+/* /////////////////////////////////////////////// Test PIR ///////////////////////////////////////////////
 int lastMotionStatus = -1;
 
 
@@ -1415,7 +1335,7 @@ void loop() {
 
     if(pirState == HIGH) {
       Serial.print("Pohyb detekovaný!");
-    } 
+    }
     else {
       Serial.print("Žiadny pohyb.");
     }
@@ -1425,9 +1345,9 @@ void loop() {
 
   delay(1000);
 }
-*//////////////////////////////////////////////////////////////////////////////////////////////////
+*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* /////////////////////////////////////////////// BME680 with Adafruit Library ////////////////////////////////////////
+/* ////////////////////////////////////// BME680 with Adafruit Library ////////////////////////////////////
 
 Adafruit_MCP23X17 mcp;  // MCP23017 GPIO expander
 Adafruit_BME680 bme;    // BME680 on hardware I2C (same bus as MCP23017)
@@ -1441,42 +1361,31 @@ void setup() {
   Serial.println("\n\n=== T-SIMCAM BME680 + MCP23017 on Hardware I2C ===");
   Serial.println("Initializing I2C on GPIO43 (SDA) and GPIO44 (SCL)");
 
-  // Inicializácia I2C pre MCP23017 a BME680 na tej istej zbernici!
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // Inicializácia MCP23017
   if (!mcp.begin_I2C(0x20)) {
     Serial.println(" MCP23017 not found at 0x20! Check wiring.");
     while (1) delay(1000);
   }
-  Serial.println("MCP23017 ready at 0x20");
-  
-  // BME680 na tej istej I2C zbernici!
-  Serial.println("Attempting to initialize BME680...");
+
   delay(100);
-  
+
   if(bme.begin(BME680_ADDR)) {
     Serial.println("BME680 detected at 0x77!");
-    
-    // Nastavenia zo vzorového kódu
+
     bme.setTemperatureOversampling(BME680_OS_8X);
     bme.setHumidityOversampling(BME680_OS_2X);
     bme.setPressureOversampling(BME680_OS_4X);
     bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
     bme.setGasHeater(320, 150); // 320°C for 150 ms
-    
-    
-    // Prvé čítanie môže zlyhať - počkaj 2 sekundy
-    Serial.println("Waiting 2 seconds for sensor stabilization...");
+
     delay(2000);
-    
+
     bme680Ready = true;
   } else {
     Serial.println(" BME680 initialization failed");
-    Serial.println("Check wiring: BME680 SDA->GPIO43, SCL->GPIO44");
-    Serial.println("              (same as MCP23017)");
   }
-  
+
   Serial.println("\nSetup complete!");
 }
 
@@ -1487,10 +1396,6 @@ void loop() {
     delay(5000);
     return;
   }
-  
-  Serial.println("\n--- Reading BME680 ---");
-
-    
 
   unsigned long endTime = bme.beginReading();
   if (endTime == 0) {
@@ -1540,12 +1445,12 @@ void loop() {
   Serial.println();
     delay(5000);
 
-  
+
 }
 
 */ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* ///////////////////////////////////////////// SMS TEST CODE ///////////////////////////////////////////////
+/* ///////////////////////////////////////////// SMS TEST CODE ////////////////////////////////////////////
 #define SerialAT Serial1
 
 String phoneNumber = "+421908199904";
@@ -1564,7 +1469,7 @@ void pcie_test()
     delay(500);
     digitalWrite(PCIE_PWR_PIN, 0);
     delay(3000);
-    
+
     // Prebudenie modemu
     do {
         SerialAT.println("AT");
@@ -1578,43 +1483,43 @@ void pcie_test()
         delay(50);
         Serial.println(opacko);
     } while (!SerialAT.find("READY") && opacko++ < 100);
-    
+
     // Registrácia na sieť
     SerialAT.println("AT+CREG?");
     delay(2000);
     while(SerialAT.available()) Serial.write(SerialAT.read());
-    
+
     // Kontrola signálu
     SerialAT.println("AT+CSQ");
     delay(1000);
     while(SerialAT.available()) Serial.write(SerialAT.read());
-    
+
     // Text mode pre SMS
     SerialAT.println("AT+CMGF=1");
     delay(1000);
     String resp = SerialAT.readString();
     Serial.print("Response: "); Serial.println(resp);
-    
+
     SerialAT.println("AT+CSCS=\"GSM\"");
     delay(1000);
     resp = SerialAT.readString();
-    
+
     Serial.println("Modem fully initialized!");
 }
 
 void setup() {
   pinMode(1, OUTPUT);
   digitalWrite(1, HIGH);
-  
+
   Serial.begin(115200);
   delay(2000);
-  
+
   pcie_test();
 
   delay(1000);
-  
+
   sendSMS(phoneNumber, "Ono to funguje :D");
-  
+
 }
 
 void loop() {
@@ -1623,16 +1528,16 @@ void loop() {
 }
 
 void sendSMS(String number, String message) {
-  
+
   while(SerialAT.available()) SerialAT.read();
 
   SerialAT.print("AT+CMGS=\"");
   SerialAT.print(number);
   SerialAT.println("\"");
-  
+
   uint32_t timeout = millis();
   bool promptReceived = false;
-  
+
   while(millis() - timeout < 5000) {
     if(SerialAT.available()) {
       char c = SerialAT.read();
@@ -1644,41 +1549,41 @@ void sendSMS(String number, String message) {
     }
     delay(10);
   }
-  
+
   if(!promptReceived) {
     Serial.println("\n ERROR: No '>' prompt received!");
     return;
   }
-  
+
   SerialAT.print(message);
   delay(100);
-  
+
   SerialAT.write(26); // Ctrl+Z na odoslanie
 
   timeout = millis();
   String response = "";
   bool success = false;
-  
+
   while(millis() - timeout < 20000) {
     if(SerialAT.available()) {
       char c = SerialAT.read();
       response += c;
       Serial.write(c);
-      
-      if(response.indexOf("+CMGS:") != -1 || 
+
+      if(response.indexOf("+CMGS:") != -1 ||
          (response.indexOf("OK") != -1 && response.length() > 10)) {
         success = true;
         break;
       }
-      
-      if(response.indexOf("ERROR") != -1 || 
+
+      if(response.indexOf("ERROR") != -1 ||
          response.indexOf("FAIL") != -1) {
         break;
       }
     }
     delay(10);
   }
-  
+
   Serial.println();
   if(success) {
     Serial.println("Sprava odoslana");
