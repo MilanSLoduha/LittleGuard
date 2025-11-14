@@ -4,20 +4,23 @@
 #include "select_pins.h"
 #include <Arduino.h>
 
-bool sdInit() {
+bool sdReady = false;
+
+void sdInit() {
 	Serial.println("--> Trying SD (SPI) init ...");
 	SPI.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
 	if (!SD.begin(SD_CS_PIN, SPI)) {
+		sdReady = false;
 		Serial.println("SD.begin() failed");
-		return false;
 	}
 	uint8_t cardType = SD.cardType();
 	if (cardType == CARD_NONE) {
+		sdReady = false;
 		Serial.println("No SD card attached");
-		return false;
 	}
 	Serial.println("SD initialized OK (SPI)");
-	return true;
+	sdReady = true;
+	photoNumber = loadPhotoNumber();
 }
 
 bool sdWritePhoto(const char *path, camera_fb_t *fb) {
@@ -51,10 +54,10 @@ uint16_t loadPhotoNumber() {
 	File file = SD.open("/photoNum.txt", FILE_READ);
 	if (!file) {
 		Serial.println("Failed to open file for reading");
-    return 999;
+		return 999;
 	}
 
 	int num = file.parseInt();
 	file.close();
-  return num;
+	return num;
 }

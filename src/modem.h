@@ -19,4 +19,4 @@ extern uint32_t check_connect_millis;  // MQTT reconnect timer
 
 void setupModem();
 void initSIM();
-void connectMobileData();
+bool connectMobileData();

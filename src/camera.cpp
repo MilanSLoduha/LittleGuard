@@ -4,6 +4,9 @@
 #include "select_pins.h"
 #include <esp_err.h>
 
+bool cameraReady = false;
+uint16_t photoNumber;
+
 bool setupCamera()
 {
   camera_config_t config;

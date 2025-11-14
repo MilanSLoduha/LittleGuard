@@ -1,5 +1,8 @@
 #include "modem.h"
 
+StreamDebugger debugger(SerialAT, Serial);
+TinyGsm modem(debugger);
+
 const uint8_t mqtt_client_id = 0;
 uint32_t check_connect_millis = 0;
 
@@ -56,7 +59,7 @@ void initSIM() {
 	}
 }
 
-void connectMobileData() {
+bool connectMobileData() {
 	int16_t sq;
 	RegStatus status = REG_NO_RESULT;
 	int timeout = 0;
@@ -71,7 +74,7 @@ void connectMobileData() {
 			timeout++;
 		} else if (status == REG_DENIED) {
 			Serial.println("\nNetwork registration DENIED!");
-			return;
+			return false;
 		} else if (status == REG_OK_ROAMING) {
 			Serial.println("\nRegistered (roaming)");
 			break;
@@ -81,7 +84,7 @@ void connectMobileData() {
 
 	if (timeout >= 30) {
 		Serial.println("\nTimeout network registration!");
-		return;
+		return false;
 	}
 
 	if (!modem.gprsConnect("o2internet", "", "")) {
@@ -89,9 +92,10 @@ void connectMobileData() {
 
 		if (!modem.gprsConnect("internet.o2active", "", "")) {
 			Serial.println("Failed with internet.o2active");
-			return;
+			return false;
 		}
 	}
 
 	Serial.println(modem.getLocalIP());
+	return true;
 }

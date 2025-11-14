@@ -84,34 +84,37 @@ bool mqtt_connect_manualLTE() {
 }
 
 void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
-	if (topic == command_topic) {
-		
-	} else if (topic == stream_topic) {
+	Serial.println("MQTT Callback - Topic: " + String(topic) + ", Payload length: " + String(len));
+	if (strcmp(topic, command_topic) == 0) {
 
-	} else if (topic == snapshot_topic) {
-		if (len > 0) {
-			if(!cameraReady) {
-				if (!setupCamera()) {
-					Serial.println("Camera init failed");
-					return;
-				}
-			}
-			if(!sdReady){
-				if (!sdInit()) {
-					Serial.println("SD init failed");
-					return;
-				}
-			}
+	} else if (strcmp(topic, stream_topic) == 0) {
 
-			camera_fb_t *fb = captureFrame();
-			if (!fb) {
-				Serial.println("Camera capture failed (fb null)");
+	} else if (strcmp(topic, snapshot_topic) == 0) {
+
+		if (!cameraReady) {
+			if (!setupCamera()) {
+				Serial.println("Camera init failed");
 				return;
 			}
-
-			sdWritePhoto(("/photo" + String(photoNumber) + ".jpg").c_str(), fb);
-			esp_camera_fb_return(fb);
 		}
+		if (!sdReady) {
+			sdInit();
+			if (!sdReady) {
+				Serial.println("SD init failed");
+				return;
+			}
+		}
+
+		camera_fb_t *fb = captureFrame();
+		if (!fb) {
+			Serial.println("Camera capture failed (fb null)");
+			return;
+		}
+		Serial.println("Ulozilo to fotku " + String(photoNumber));
+		sdWritePhoto(("/photo" + String(photoNumber) + ".jpg").c_str(), fb);
+		esp_camera_fb_return(fb);
+		photoNumber++;
+		savePhotoNumber(photoNumber);
 	}
 }
 

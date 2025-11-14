@@ -370,29 +370,27 @@ void loop()
 }
 */
 
-/* /////////////////////////////////////////////// MQTT TEST CODE //////////////////////////////////////// 
-#include <Arduino.h> 
-#include <Wire.h> 
-#include <Adafruit_MCP23X17.h> 
-#include <RTClib.h> 
-#include "select_pins.h" 
-#include "sd_storage.h" 
-#include "camera.h" 
-#include"rtc_time.h" 
-#include <stepper.h> 
-#include "WiFi.h" 
-#include "secrets.h"
-#include <PubSubClient.h>
-#include <WiFiClientSecure.h>
+/* /////////////////////////////////////////////// MQTT TEST CODE ////////////////////////////////////////
+#include "WiFi.h"
+#include "camera.h"
 #include "esp_task_wdt.h"
+#include "rtc_time.h"
+#include "sd_storage.h"
+#include "secrets.h"
+#include "select_pins.h"
+#include <Adafruit_MCP23X17.h>
+#include <Arduino.h>
+#include <PubSubClient.h>
+#include <RTClib.h>
+#include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <stepper.h>
 
 // BME680 musí byť za camera.h kvôli konfliktu sensor_t
 // senzor v namespace
 #define sensor_t adafruit_sensor_t
 #include "Adafruit_BME680.h"
 #undef sensor_t
-
-
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -402,169 +400,161 @@ RTC_DS3231 rtc;
 Adafruit_BME680 bme;
 bool bme680Ready = false;
 #define SEALEVELPRESSURE_HPA (1013.25)
-#define BME680_ADDR 0x77  //BME680
+#define BME680_ADDR 0x77 // BME680
 
 int lastState = -1;
 
-const char* temperature_topic = TEMPERATURE_TOPIC;
-const char* motion_topic = MOTION_TOPIC;
-const char* last_motion_topic = LAST_MOTION_TOPIC;
-const char* command_topic = COMMAND_TOPIC;
-const char* settings_topic = SETTINGS_TOPIC;
+// Topic premenné sú definované v mqtt_server.cpp
+extern const char *temperature_topic;
+extern const char *motion_topic;
+extern const char *last_motion_topic;
+extern const char *command_topic;
+extern const char *settings_topic;
+extern const char *stream_topic;
+extern const char *snapshot_topic;
+
 void setup() {
-  Serial.begin(115200);
-  delay(2000);
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  unsigned long wifiTimeout = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi connected!");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("WiFi connection FAILED - continuing without WiFi");
-  }
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-
-  espClient.setInsecure();
-  client.setServer(MQTT_SERVER, MQTT_PORT);
-
-  // Inicializácia MCP23017
-  Serial.println("Looking for MCP23017...");
-  bool mcpReady = false;
-  if (mcp.begin_I2C(0x20)) {
-    mcp.pinMode(MCP_SDA_PIN, OUTPUT); // GPA0 ako SDA pre DS3231
-    mcp.pinMode(MCP_SCL_PIN, OUTPUT); // GPA1 ako SCL pre DS3231
-    mcp.digitalWrite(MCP_SDA_PIN, HIGH); // Simulácia pull-up
-    mcp.digitalWrite(MCP_SCL_PIN, HIGH);
-
-    mcp.pinMode(MCP_PIR_PIN, INPUT);
-
-    mcp.pinMode(OUTPUT1, OUTPUT);
-    mcp.pinMode(OUTPUT2, OUTPUT);
-    mcp.pinMode(OUTPUT3, OUTPUT);
-    mcp.pinMode(OUTPUT4, OUTPUT);
-    mcpReady = true;
-  } else {
-    Serial.println("WARNING: MCP23017 not found!");
-  }
-
-  if (mcpReady) {
-    DateTime testTime;
-    if (!read_rtc_time(testTime)) {
-      Serial.println("WARNING: RTC read failed via bit-banging");
-    }
-  } else {
-    Serial.println("Skipping RTC test - MCP not ready");
-  }
-
-
-  bme680Ready = false;
-
-  if(bme.begin(0x77, &Wire)) {
-    bme680Ready = true;
-  }
-
-  if(bme680Ready) {
-    bme.setTemperatureOversampling(BME680_OS_8X);
-    bme.setHumidityOversampling(BME680_OS_2X);
-    bme.setPressureOversampling(BME680_OS_4X);
-    bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-    bme.setGasHeater(320, 150); // 320°C for 150 ms
+    Serial.begin(115200);
     delay(2000);
 
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-    if (!bme.performReading()) {
-      Serial.println("WARNING: BME680 detected but failed to perform reading");
-      bme680Ready = false;
+    unsigned long wifiTimeout = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
+        delay(500);
+        Serial.print(".");
     }
-  } else {
-    Serial.println("WARNING: BME680 not found at address 0x77");
-  }
+    Serial.println();
 
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi connected!");
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("WiFi connection FAILED - continuing without WiFi");
+    }
 
-  Serial.println("\n=== Setup complete! ===");
+    Wire.begin(SDA_PIN, SCL_PIN);
+
+    espClient.setInsecure();
+    client.setServer(MQTT_SERVER, MQTT_PORT);
+
+    // Inicializácia MCP23017
+    Serial.println("Looking for MCP23017...");
+    bool mcpReady = false;
+    if (mcp.begin_I2C(0x20)) {
+        mcp.pinMode(MCP_SDA_PIN, OUTPUT);    // GPA0 ako SDA pre DS3231
+        mcp.pinMode(MCP_SCL_PIN, OUTPUT);    // GPA1 ako SCL pre DS3231
+        mcp.digitalWrite(MCP_SDA_PIN, HIGH); // Simulácia pull-up
+        mcp.digitalWrite(MCP_SCL_PIN, HIGH);
+
+        mcp.pinMode(MCP_PIR_PIN, INPUT);
+
+        mcp.pinMode(OUTPUT1, OUTPUT);
+        mcp.pinMode(OUTPUT2, OUTPUT);
+        mcp.pinMode(OUTPUT3, OUTPUT);
+        mcp.pinMode(OUTPUT4, OUTPUT);
+        mcpReady = true;
+    } else {
+        Serial.println("WARNING: MCP23017 not found!");
+    }
+
+    if (mcpReady) {
+        DateTime testTime;
+    } else {
+        Serial.println("Skipping RTC test - MCP not ready");
+    }
+
+    bme680Ready = false;
+
+    if (bme.begin(0x77, &Wire)) {
+        bme680Ready = true;
+    }
+
+    if (bme680Ready) {
+        bme.setTemperatureOversampling(BME680_OS_8X);
+        bme.setHumidityOversampling(BME680_OS_2X);
+        bme.setPressureOversampling(BME680_OS_4X);
+        bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+        bme.setGasHeater(320, 150); // 320°C for 150 ms
+        delay(2000);
+
+        if (!bme.performReading()) {
+            Serial.println("WARNING: BME680 detected but failed to perform reading");
+            bme680Ready = false;
+        }
+    } else {
+        Serial.println("WARNING: BME680 not found at address 0x77");
+    }
+
+    Serial.println("\n=== Setup complete! ===");
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected, skipping loop");
-    delay(5000);
-    return;
-  }
-
-  if (!client.connected()) {
-    if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
-      Serial.print("MQTT connection failed, rc=");
-      Serial.println(client.state());
-      delay(2000);
-      return;
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, skipping loop");
+        delay(5000);
+        return;
     }
-  }
 
-  if (!bme680Ready) {
-    Serial.println("BME680 not ready, skipping sensor reading");
-    delay(10000);
-    return;
-  }
-
-  unsigned long endTime = bme.beginReading();
-  if (endTime == 0) {
-    Serial.println(F("Failed to begin reading"));
-    return;
-  }
-
-
-  //Serial.print(millis());
-  //Serial.println(endTime);
-
-  float tlak = bme.pressure / 100.0; // hPa
-  float vlhkost = bme.humidity; // %
-  float teplota = bme.temperature; // °C
-  float plyn = bme.gas_resistance / 1000.0; // KOhms
-  float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
-
-  //odosielanie
-  String sprava = String(bme.temperature);
-  if (client.publish(temperature_topic, sprava.c_str())) {
-    Serial.println("Message published successfully");
-  } else {
-    Serial.println("Message publishing failed");
-  }
-
-  int pirState = mcp.digitalRead(MCP_PIR_PIN);
-  if (pirState != lastState) {
-    if(lastState == 1) {
-      DateTime now;
-      if (read_rtc_time(now)) {
-        sprava = stringTime(now);
-        if (!client.publish(last_motion_topic, sprava.c_str())) {
-          Serial.println("Last motion publish FAILED");
+    if (!client.connected()) {
+        if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
+            Serial.print("MQTT connection failed, rc=");
+            Serial.println(client.state());
+            delay(2000);
+            return;
         }
-      } else {
-        Serial.println("ERROR: Failed to read RTC time");
-        sprava = "RTC read failed";
-        client.publish(last_motion_topic, sprava.c_str());
-      }
     }
-    lastState = pirState;
-    sprava = String(pirState);
-    if (!client.publish(motion_topic, sprava.c_str())) {
-      Serial.println("Message publishing failed");
-    }
-  }
-  client.loop();
 
-  Serial.println();
-  delay(10000);
+    if (!bme680Ready) {
+        Serial.println("BME680 not ready, skipping sensor reading");
+        delay(10000);
+        return;
+    }
+
+    unsigned long endTime = bme.beginReading();
+    if (endTime == 0) {
+        Serial.println(F("Failed to begin reading"));
+        return;
+    }
+
+    // Serial.print(millis());
+    // Serial.println(endTime);
+
+    float tlak = bme.pressure / 100.0;                             // hPa
+    float vlhkost = bme.humidity;                                  // %
+    float teplota = bme.temperature;                               // °C
+    float plyn = bme.gas_resistance / 1000.0;                      // KOhms
+    float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+
+    // odosielanie
+    String sprava = String(bme.temperature);
+    if (client.publish(temperature_topic, sprava.c_str())) {
+        Serial.println("Message published successfully");
+    } else {
+        Serial.println("Message publishing failed");
+    }
+
+    int pirState = mcp.digitalRead(MCP_PIR_PIN);
+    if (pirState != lastState) {
+        if (lastState == 1) {
+            DateTime now;
+
+            sprava = stringTime(now);
+            if (!client.publish(last_motion_topic, sprava.c_str())) {
+                Serial.println("Last motion publish FAILED");
+            }
+        }
+        lastState = pirState;
+        sprava = String(pirState);
+        if (!client.publish(motion_topic, sprava.c_str())) {
+            Serial.println("Message publishing failed");
+        }
+    }
+    client.loop();
+
+    Serial.println();
+    delay(10000);
 }
 */ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -596,8 +586,8 @@ void loop() {
 #define SerialMon Serial
 #define SMS_TARGET "+421908199904"
 
-StreamDebugger debugger(SerialAT, Serial);
-TinyGsm modem(debugger);
+// StreamDebugger debugger(SerialAT, Serial);
+// TinyGsm modem(debugger);
 
 int lastMotionStatus = -1;
 int currentMotorAngle = 0; // Aktuálna pozícia motora
@@ -610,7 +600,8 @@ int currentMotorAngle = 0; // Aktuálna pozícia motora
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
-bool wifiConnected;
+bool wifiConnected = false;
+bool mobileDataConnected = false;
 
 Adafruit_MCP23X17 mcp;
 bool mcpReady = false;
@@ -697,8 +688,6 @@ void webServer() {
 	Serial.print("Connected to WiFi. IP: ");
 	Serial.println(WiFi.localIP());
 
-	setupCamera();
-
 	startCameraServer();
 	Serial.print("Camera Ready! Use 'http://");
 	Serial.print(WiFi.localIP());
@@ -740,22 +729,57 @@ void setupSensors() {
 }
 
 bool wifiSetup() {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  unsigned long wifiTimeout = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
+	unsigned long wifiTimeout = millis();
+	while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
+		delay(500);
+		Serial.print(".");
+	}
+	Serial.println();
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(WiFi.localIP());
-    return true;
-  } else {
-    Serial.println("WiFi connection FAILED - continuing without WiFi");
-    return false;
-  }
+	if (WiFi.status() == WL_CONNECTED) {
+		Serial.println(WiFi.localIP());
+		return true;
+	} else {
+		Serial.println("WiFi connection FAILED - continuing without WiFi");
+		return false;
+	}
+}
+
+void publishMQTT(String topic, String message) {
+	if (mobileDataConnected) {
+
+		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
+
+		if (modem.waitResponse(2000) != 1) {
+			Serial.println("MQTT disconnected, reconnecting...");
+			mqtt_connect_manualLTE();
+		}
+
+		if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
+			Serial.println("Publish failed");
+		}
+
+	} else if (wifiConnected) {
+		if (!client.connected()) {
+			espClient.setInsecure();
+			if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
+				Serial.print("MQTT connection failed, rc=");
+				Serial.println(client.state());
+				delay(2000);
+				return;
+			}
+			Serial.println("MQTT reconnected, subscribing...");
+			client.subscribe(command_topic);
+			client.subscribe(stream_topic);
+			client.subscribe(snapshot_topic);
+		}
+
+		if (!client.publish(topic.c_str(), message.c_str())) {
+			Serial.println("Message publishing failed");
+		}
+	}
 }
 
 void setup() {
@@ -765,20 +789,30 @@ void setup() {
 	wifiConnected = wifiSetup();
 	setupModem();
 	initSIM();
-	connectMobileData();
-	mqttPrepareLTE();
 
-	// Connect using manual AT commands
-	if (!mqtt_connect_manualLTE()) {
-		Serial.println("MQTT connection failed!");
-		return;
+	if (!wifiConnected) {
+		mobileDataConnected = connectMobileData();
+		mqttPrepareLTE();
+
+		if (!mqtt_connect_manualLTE()) {
+			Serial.println("MQTT connection failed!");
+			return;
+		}
+		modem.mqtt_set_callback(mqtt_callback);
+
+		modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
+		modem.mqtt_subscribe(mqtt_client_id, command_topic);
+		modem.mqtt_subscribe(mqtt_client_id, stream_topic);
+		modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
+	} else {
+		Serial.println("Setting up WiFi MQTT...");
+		espClient.setInsecure();
+		client.setServer(MQTT_SERVER, MQTT_PORT);
+		client.setKeepAlive(60); // Keepalive 60 sekúnd namiesto default 15s
+		client.setCallback(mqtt_callback);
+		// Pripojenie a subscribe sa urobia v loop()
+		Serial.println("WiFi MQTT setup complete (will connect in loop)");
 	}
-	modem.mqtt_set_callback(mqtt_callback);
-
-	modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
-	modem.mqtt_subscribe(mqtt_client_id, command_topic);
-  modem.mqtt_subscribe(mqtt_client_id, stream_topic);
-  modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
 
 	// Inicializácia I2C pre MCP23017
 	Wire.begin(SDA_PIN, SCL_PIN);
@@ -789,38 +823,29 @@ void setup() {
 	mcpReady = true;
 
 	if (mcpReady) {
-    setupSensors();
+		setupSensors();
 	}
 
 	webServer();
 
-  bool res = modem.sendSMS(SMS_TARGET, String("SDADASDASD"));  
-  Serial.println(res ? "" : "fail");
+	// bool res = modem.sendSMS(SMS_TARGET, String("SDADASDASD"));
+	// Serial.println(res ? "" : "fail");
 
-  cameraReady = setupCamera();
+	cameraReady = setupCamera();
+	if (!cameraReady) {
+		Serial.println("Camera setup failed");
+	}
 }
 
 void loop() {
+	// Volaj MQTT loop hneď na začiatku pre udržanie spojenia
+	if (wifiConnected) client.loop();
+	if (mobileDataConnected) modem.mqtt_handle();
+
 	DateTime now;
 	// printTime(now);
 
 	int pirState = mcp.digitalRead(MCP_PIR_PIN);
-
-	if (millis() > check_connect_millis) {
-		check_connect_millis = millis() + 10000UL;
-
-		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
-		if (modem.waitResponse(2000) != 1) {
-			Serial.println("MQTT disconnected, reconnecting...");
-			mqtt_connect_manualLTE();
-		} else {
-			String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) + "s";
-
-			if (!modem.mqtt_publish(mqtt_client_id, motion_topic, message.c_str(), 1)) {
-				Serial.println("Publish failed");
-			}
-		}
-	}
 
 	delay(1000);
 	if (lastMotionStatus != pirState) {
@@ -829,8 +854,8 @@ void loop() {
 		} else {
 			Serial.println("Žiadny pohyb.");
 		}
-
 		lastMotionStatus = pirState;
+		publishMQTT(motion_topic, String(pirState));
 	}
 
 	if (bme680Ready) {
@@ -846,14 +871,10 @@ void loop() {
 		float plyn = bme.gas_resistance / 1000.0;                      // KOhms
 		float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
 
-		String sprava = String(bme.temperature);
-		if (!modem.mqtt_publish(mqtt_client_id, temperature_topic, sprava.c_str(), 1)) {
-			Serial.println("Message publishing failed");
-		}
+		publishMQTT(temperature_topic, String(teplota));
 	}
 
 	Serial.clearWriteError();
-	modem.mqtt_handle();
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1306,46 +1327,6 @@ void loop() {
   delay(5000);
 }
 */ ////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/* /////////////////////////////////////////////// Test PIR ///////////////////////////////////////////////
-int lastMotionStatus = -1;
-
-
-void setup() {
-  Serial.begin(115200);
-  delay(10000);
-
-  Serial.println("T-SIMCAM: Test PIR senzora na MCP23017 (GPA2)");
-
-  Wire.begin(43, 44); // SDA=43, SCL=44 (Grove konektor na T-SIMCAM)
-
-  if (!mcp.begin_I2C(MCP_ADDRESS)) {
-    Serial.println("MCP23017 nebol nájdený! Skontroluj zapojenie a adresu.");
-    while (true) delay(100);
-  }
-
-  mcp.pinMode(MCP_PIR_PIN, INPUT);
-  Serial.println("MCP23017 inicializovaný. PIR senzor pripravený.");
-}
-
-void loop() {
-  int pirState = mcp.digitalRead(MCP_PIR_PIN);
-
-  if(lastMotionStatus != pirState) {
-
-    if(pirState == HIGH) {
-      Serial.print("Pohyb detekovaný!");
-    }
-    else {
-      Serial.print("Žiadny pohyb.");
-    }
-
-    lastMotionStatus = pirState;
-  }
-
-  delay(1000);
-}
-*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /* ////////////////////////////////////// BME680 with Adafruit Library ////////////////////////////////////
 
