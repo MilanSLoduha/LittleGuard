@@ -20,6 +20,8 @@ extern const char *snapshot_topic;
 
 extern const uint8_t mqtt_client_id;
 
+extern bool stream;
+
 bool mqtt_connect_manualLTE();
 void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len);
 void mqttPrepareLTE();

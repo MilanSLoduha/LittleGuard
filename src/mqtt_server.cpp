@@ -6,6 +6,7 @@ const uint16_t broker_port = MQTT_PORT;
 const char *broker_username = MQTT_USER;
 const char *broker_password = MQTT_PASSWORD;
 const char *client_id = "T-SIMCAM-LTE";
+bool stream = false;
 
 const char *temperature_topic = TEMPERATURE_TOPIC;
 const char *motion_topic = MOTION_TOPIC;
@@ -88,6 +89,7 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 	if (strcmp(topic, command_topic) == 0) {
 
 	} else if (strcmp(topic, stream_topic) == 0) {
+		stream = (payload[0] == '1');
 
 	} else if (strcmp(topic, snapshot_topic) == 0) {
 
