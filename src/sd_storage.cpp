@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <ESP.h>
 #include <esp_camera.h>
+#include <esp_timer.h>
 
 bool sdReady = false;
 Preferences prefs;
@@ -213,4 +214,17 @@ bool saveCameraSetup(String &macAddress) {
 	file.close();
 	Serial.println("Camera setup saved to SD card");
 	return true;
+}
+
+// RTC-backed double-reset detector (non-blocking, 2.5s window)
+RTC_DATA_ATTR uint64_t dr_last_boot_us = 0;
+RTC_DATA_ATTR bool dr_armed = false;
+bool detectDoubleReset() {
+	uint64_t now = esp_timer_get_time(); // microseconds since boot
+	bool withinWindow = dr_armed && (now - dr_last_boot_us) < 2500000ULL; // 2.5s
+	bool detected = withinWindow;
+	// re-arm for next boot
+	dr_armed = true;
+	dr_last_boot_us = now;
+	return detected;
 }

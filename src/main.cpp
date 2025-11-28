@@ -438,21 +438,9 @@ bool bme680Ready = false;
 #define BME680_ADDR 0x77
 
 RTC_DATA_ATTR uint32_t doubleResetCounter = 0;
-const uint32_t DOUBLE_RESET_WINDOW_MS = 3500;
 
 void startCameraServer();
 void processPairingRequest();
-
-bool detectDoubleReset() {
-	bool detected = doubleResetCounter == 1;
-	doubleResetCounter++;
-	if (detected) {
-		doubleResetCounter = 0;
-		Serial.println("Double reset detected -> factory reset");
-		return true;
-	}
-	return false;
-}
 
 void factoryReset() {
 	Serial.println("Factory reset: clearing saved WiFi/camera settings");
@@ -814,17 +802,14 @@ void setup() {
 	Serial.begin(115200);
 	delay(100);
 
-	Serial.println("Double-tap RST within 2.5s to factory reset stored settings");
+
 	bool shouldFactoryReset = detectDoubleReset();
-	if (shouldFactoryReset) {
+	if (shouldFactoryReset) { //3500delay
 		factoryReset();
 	}
 
-	delay(DOUBLE_RESET_WINDOW_MS);
-	doubleResetCounter = 0;
-
 	sdInit();
-	delay(2000);
+
 	firstRun = firstTime();
 	if (!firstRun) {
 		String ssidLoaded;

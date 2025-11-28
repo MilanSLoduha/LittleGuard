@@ -16,3 +16,4 @@ bool firstTime();
 bool saveWIFICredentials(String &ssid, String &password);
 void saveFirstTime();
 bool saveCameraSetup(String &macAddress);
+bool detectDoubleReset();
