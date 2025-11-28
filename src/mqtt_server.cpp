@@ -90,7 +90,6 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 
 	} else if (strcmp(topic, stream_topic) == 0) {
 		stream = (payload[0] == '1');
-
 	} else if (strcmp(topic, snapshot_topic) == 0) {
 
 		if (!cameraReady) {

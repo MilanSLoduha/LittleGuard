@@ -3,7 +3,7 @@
 
 #define TINY_GSM_MODEM_A7670
 #define TINY_GSM_RX_BUFFER 1024
-#define DUMP_AT_COMMANDS
+// #define DUMP_AT_COMMANDS
 
 #include "secrets.h"
 #include "HivemqRootCA.h"
@@ -373,10 +373,12 @@ void loop()
 /////////////////////////////////////////////// MAIN CODE ////////////////////////////////////////////////////
 #define TINY_GSM_MODEM_A7670
 #define TINY_GSM_RX_BUFFER 1024
-#define DUMP_AT_COMMANDS
+// #define DUMP_AT_COMMANDS
 
 #include <Adafruit_MCP23X17.h>
 #include <Arduino.h>
+#include <ESP.h>
+#include <Preferences.h>
 #include <PubSubClient.h>
 #include <RTClib.h>
 #include <StreamDebugger.h>
@@ -402,6 +404,7 @@ void loop()
 
 // StreamDebugger debugger(SerialAT, Serial);
 // TinyGsm modem(debugger);
+// TinyGsmHttpsComm<TinyGsmA7670, ASR_A7670X> https(modem);
 
 int lastMotionStatus = -1;
 int currentMotorAngle = 0; // Aktuálna pozícia motora
@@ -415,9 +418,13 @@ int currentMotorAngle = 0; // Aktuálna pozícia motora
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 bool wifiConnected = false;
+String SSID;
+String PASSWORD;
 bool mobileDataConnected = false;
 
-long long lastFrame;
+bool firstRun;
+
+long long lastFrame = 0;
 
 HTTPClient http;
 
@@ -430,7 +437,44 @@ bool bme680Ready = false;
 #define SEALEVELPRESSURE_HPA (1013.25)
 #define BME680_ADDR 0x77
 
+RTC_DATA_ATTR uint32_t doubleResetCounter = 0;
+const uint32_t DOUBLE_RESET_WINDOW_MS = 3500;
+
 void startCameraServer();
+void processPairingRequest();
+
+bool detectDoubleReset() {
+	bool detected = doubleResetCounter == 1;
+	doubleResetCounter++;
+	if (detected) {
+		doubleResetCounter = 0;
+		Serial.println("Double reset detected -> factory reset");
+		return true;
+	}
+	return false;
+}
+
+void factoryReset() {
+	Serial.println("Factory reset: clearing saved WiFi/camera settings");
+
+	Preferences resetPrefs;
+
+	resetPrefs.begin("wifi", false);
+	resetPrefs.clear();
+	resetPrefs.end();
+
+	resetPrefs.begin("camera", false);
+	resetPrefs.clear();
+	resetPrefs.end();
+
+	resetPrefs.begin("setup", false);
+	resetPrefs.clear();
+	resetPrefs.end();
+
+	doubleResetCounter = 0;
+	delay(150);
+	ESP.restart();
+}
 
 void setMotorAngle(int angle) {
 	angle += 180;
@@ -493,14 +537,14 @@ void webServer() {
 	esp_efuse_mac_get_default(mac);
 	ssid = WIFI_AP_SSID;
 	ssid += mac[0] + mac[1] + mac[2];
-	// WiFi.mode(WIFI_MODE_APSTA); //AP
-	// WiFi.softAP(ssid.c_str(), WIFI_AP_PASSWORD);
-	WiFi.mode(WIFI_STA);
-	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-	while (WiFi.status() != WL_CONNECTED) {
-		delay(500);
-		Serial.print(".");
-	}
+	WiFi.mode(WIFI_MODE_APSTA); // AP
+	WiFi.softAP(ssid.c_str(), WIFI_AP_PASSWORD);
+	// WiFi.mode(WIFI_STA);
+	// WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+	//  while (WiFi.status() != WL_CONNECTED) {
+	//  	delay(500);
+	//  	Serial.print(".");
+	//  }
 
 	Serial.println("");
 	Serial.print("Connected to WiFi. IP: ");
@@ -547,7 +591,7 @@ void setupSensors() {
 }
 
 bool wifiSetup() {
-	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+	WiFi.begin(SSID, PASSWORD);
 
 	unsigned long wifiTimeout = millis();
 	while (WiFi.status() != WL_CONNECTED && (millis() - wifiTimeout) < 15000) {
@@ -565,19 +609,27 @@ bool wifiSetup() {
 	}
 }
 
-void publishMQTT(String topic, String message) {
+bool publishMQTT(String topic, String message) {
 	if (mobileDataConnected) {
 
 		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
 
 		if (modem.waitResponse(2000) != 1) {
 			Serial.println("MQTT disconnected, reconnecting...");
-			mqtt_connect_manualLTE();
+			if (mqtt_connect_manualLTE()) {
+				modem.mqtt_set_callback(mqtt_callback);
+				modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
+				modem.mqtt_subscribe(mqtt_client_id, command_topic);
+				modem.mqtt_subscribe(mqtt_client_id, stream_topic);
+				modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
+			}
 		}
 
 		if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
 			Serial.println("Publish failed");
+			return false;
 		}
+		return true;
 
 	} else if (wifiConnected) {
 		if (!client.connected()) {
@@ -586,7 +638,7 @@ void publishMQTT(String topic, String message) {
 				Serial.print("MQTT connection failed, rc=");
 				Serial.println(client.state());
 				delay(2000);
-				return;
+				return false; 
 			}
 			Serial.println("MQTT reconnected, subscribing...");
 			client.subscribe(command_topic);
@@ -596,8 +648,11 @@ void publishMQTT(String topic, String message) {
 
 		if (!client.publish(topic.c_str(), message.c_str())) {
 			Serial.println("Message publishing failed");
+			return false;
 		}
+		return true;
 	}
+	return false;
 }
 
 extern bool connectAbly() {
@@ -635,7 +690,6 @@ extern bool postFrame() {
 	String encoded = base64::encode(fb->buf, fb->len);
 	Serial.printf("Base64: %d bytes\n", encoded.length());
 
-	// Vytvor JSON payload bez array wrappera (ako vo funkčnom kóde)
 	String payload = "{";
 	payload += "\"name\":\"frame\",";
 	payload += "\"data\":{";
@@ -651,120 +705,267 @@ extern bool postFrame() {
 
 	String url = "https://" + String(ABLY_HOST) + "/channels/camera-stream/messages";
 
-	http.begin(url);
-	http.addHeader("Content-Type", "application/json");
-	http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
-	http.setTimeout(15000);
+	if (wifiConnected) {
+		http.begin(url);
+		http.addHeader("Content-Type", "application/json");
+		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
+		http.setTimeout(15000);
 
-	int httpResponseCode = http.POST(payload);
-	if (httpResponseCode != 200 && httpResponseCode != 201) {
-		Serial.print("Ably POST failed, HTTP response code: ");
-		Serial.println(httpResponseCode);
-		String response = http.getString();
-		Serial.println("Response body: " + response);
-		Serial.println("Payload preview (first 200 chars): " + payload.substring(0, min(200, (int)payload.length())));
+		int httpResponseCode = http.POST(payload);
+		if (httpResponseCode != 200 && httpResponseCode != 201) {
+			Serial.print("Ably POST failed, HTTP response code: ");
+			Serial.println(httpResponseCode);
+			String response = http.getString();
+			Serial.println("Response body: " + response);
+			http.end();
+			return false;
+		}
 		http.end();
-		return false;
+	} else if (mobileDataConnected) {
+		modem.sendAT("+HTTPTERM");
+		modem.waitResponse(3000);
+
+		modem.sendAT("+HTTPINIT");
+		if (modem.waitResponse(10000) != 1) {
+			Serial.println("HTTP init failed");
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"URL\",\"" + url + "\"");
+		if (modem.waitResponse(3000) != 1) {
+			Serial.println("HTTP set URL failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"CONTENT\",\"application/json\"");
+		if (modem.waitResponse(3000) != 1) {
+			Serial.println("HTTP set content type failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"USERDATA\",\"Authorization: Basic " + String(ABLY_AUTH_BASIC) + "\"");
+		if (modem.waitResponse(3000) != 1) {
+			Serial.println("HTTP set authorization failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"15000\"");
+		modem.waitResponse();
+
+		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",10000");
+		if (modem.waitResponse("DOWNLOAD") != 1) {
+			Serial.println("HTTP data failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.stream.write(payload.c_str(), payload.length());
+		if (modem.waitResponse() != 1) {
+			Serial.println("HTTP data send failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPACTION=1");
+		if (modem.waitResponse(30000, "+HTTPACTION:") != 1) {
+			Serial.println("HTTP action failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		String response = modem.stream.readStringUntil('\n');
+		int c1 = response.indexOf(',');
+		int c2 = response.indexOf(',', c1 + 1);
+		int method = response.substring(0, c1).toInt();
+		int status = response.substring(c1 + 1, c2).toInt();
+		int length = response.substring(c2 + 1).toInt();
+
+		if (status != 200 && status != 201) {
+			Serial.print("Ably POST failed via LTE, HTTP response code: ");
+			Serial.println(status);
+			if (length > 0) {
+				modem.sendAT("+HTTPREAD=0," + String(length));
+				if (modem.waitResponse(3000) == 1) {
+					String body = modem.stream.readStringUntil('\n');
+					Serial.println("Response body: " + body);
+				}
+			}
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPTERM");
+		modem.waitResponse();
 	}
-	Serial.println("Frame sent successfully!");
-	http.end();
 	return true;
 }
 
 void setup() {
 	Serial.begin(115200);
-	delay(5000);
+	delay(100);
 
-	wifiConnected = wifiSetup();
-	setupModem();
-	initSIM();
+	Serial.println("Double-tap RST within 2.5s to factory reset stored settings");
+	bool shouldFactoryReset = detectDoubleReset();
+	if (shouldFactoryReset) {
+		factoryReset();
+	}
 
-	if (!wifiConnected) {
+	delay(DOUBLE_RESET_WINDOW_MS);
+	doubleResetCounter = 0;
+
+	sdInit();
+	delay(2000);
+	firstRun = firstTime();
+	if (!firstRun) {
+		String ssidLoaded;
+		String passLoaded;
+		bool credentials = loadWIFICredentials(ssidLoaded, passLoaded);
+
+        Serial.println("SSID: \"" + ssidLoaded + "\"");
+        Serial.println("PASSWORD: \"" + passLoaded + "\"");
+		if (!sdReady) {
+			Serial.println("SD Card initialization failed! (loading WiFi from NVS anyway)");
+		}
+		wifiConnected = false;
+		if (credentials) {
+			SSID = ssidLoaded;
+			PASSWORD = passLoaded;
+			Serial.printf("Loaded WiFi credentials. SSID=\"%s\"\n", SSID.c_str());
+			wifiConnected = wifiSetup();
+		} else {
+			Serial.println("Without credentials");
+		}
+		setupModem();
+		initSIM();
+
+		if (!wifiConnected) {
+			mobileDataConnected = connectMobileData();
+			mqttPrepareLTE();
+
+			if (!mqtt_connect_manualLTE()) {
+				Serial.println("MQTT connection failed!");
+				return;
+			}
+			modem.mqtt_set_callback(mqtt_callback);
+
+			modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
+			modem.mqtt_subscribe(mqtt_client_id, command_topic);
+			modem.mqtt_subscribe(mqtt_client_id, stream_topic);
+			modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
+
+		} else {
+			espClient.setInsecure();
+			client.setServer(MQTT_SERVER, MQTT_PORT);
+			client.setKeepAlive(60);
+			client.setCallback(mqtt_callback);
+		}
+
+		// I2C
+		Wire.begin(SDA_PIN, SCL_PIN);
+
+		if (!mcp.begin_I2C(0x20)) {
+			Serial.println("MCP23017 have not been found on 0x20!");
+		}
+		mcpReady = true;
+
+		if (mcpReady) {
+			setupSensors();
+		}
+
+		// webServer();
+		connectAbly(); //--------
+		// bool res = modem.sendSMS(SMS_TARGET, String("SDADASDASD"));
+		// Serial.println(res ? "" : "fail");
+
+		cameraReady = setupCamera();
+		if (!cameraReady) {
+			Serial.println("Camera setup failed");
+		}
+		bme680Ready = false; // sddddddddddddddddddddddddddddddd
+	} else {
+		setupModem();
+		initSIM();
+
 		mobileDataConnected = connectMobileData();
 		mqttPrepareLTE();
 
 		if (!mqtt_connect_manualLTE()) {
 			Serial.println("MQTT connection failed!");
-			return;
+		} else {
+            modem.mqtt_set_callback(mqtt_callback);
 		}
-		modem.mqtt_set_callback(mqtt_callback);
 
-		modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
-		modem.mqtt_subscribe(mqtt_client_id, command_topic);
-		modem.mqtt_subscribe(mqtt_client_id, stream_topic);
-		modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
-	} else {
-		espClient.setInsecure();
-		client.setServer(MQTT_SERVER, MQTT_PORT);
-		client.setKeepAlive(60);
-		client.setCallback(mqtt_callback);
-	}
-
-	// Inicializácia I2C pre MCP23017
-	Wire.begin(SDA_PIN, SCL_PIN);
-
-	if (!mcp.begin_I2C(0x20)) {
-		Serial.println("MCP23017 have not been found on 0x20!");
-	}
-	mcpReady = true;
-
-	if (mcpReady) {
-		setupSensors();
-	}
-
-	//webServer();
-	connectAbly(); //--------
-	// bool res = modem.sendSMS(SMS_TARGET, String("SDADASDASD"));
-	// Serial.println(res ? "" : "fail");
-
-	cameraReady = setupCamera();
-	if (!cameraReady) {
-		Serial.println("Camera setup failed");
+		webServer();
 	}
 }
 
 void loop() {
-	// Volaj MQTT loop hneď na začiatku pre udržanie spojenia
-	if (wifiConnected) client.loop();
-	if (mobileDataConnected) modem.mqtt_handle();
+	if (!firstRun) {
+		esp_task_wdt_reset();
+		// processPairingRequest(); // Odstránené - párovanie sa deje len pri prvom spustení
 
-	DateTime now;
-	// printTime(now);
+		if (wifiConnected) client.loop();
+		if (mobileDataConnected) modem.mqtt_handle();
 
-	int pirState = mcp.digitalRead(MCP_PIR_PIN);
+		DateTime now;
+		// printTime(now);
 
-	delay(1000);
-	if (lastMotionStatus != pirState) {
-		if (pirState == HIGH) {
-			Serial.println("Pohyb detekovaný!");
-		} else {
-			Serial.println("Žiadny pohyb.");
+		int pirState = mcp.digitalRead(MCP_PIR_PIN);
+
+		
+		if (lastMotionStatus != pirState) {
+			if (pirState == HIGH) {
+				Serial.println("Pohyb detekovaný!");
+			} else {
+				Serial.println("Žiadny pohyb.");
+			}
+			lastMotionStatus = pirState;
+			publishMQTT(motion_topic, String(pirState));
 		}
-		lastMotionStatus = pirState;
-		publishMQTT(motion_topic, String(pirState));
-	}
 
-	if (bme680Ready) {
-		unsigned long endTime = bme.beginReading();
-		if (endTime == 0) {
-			Serial.println(F("Failed to begin reading"));
-			return;
+		if (bme680Ready) {
+			unsigned long endTime = bme.beginReading();
+			if (endTime == 0) {
+				Serial.println(F("Failed to begin reading"));
+				return;
+			}
+			delay(1000);                                                   // počkaj na dokončenie čítania
+			float tlak = bme.pressure / 100.0;                             // hPa
+			float vlhkost = bme.humidity;                                  // %
+			float teplota = bme.temperature;                               // °C
+			float plyn = bme.gas_resistance / 1000.0;                      // KOhms
+			float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+
+			publishMQTT(temperature_topic, String(teplota));
 		}
-		delay(1000);                                                   // počkaj na dokončenie čítania
-		float tlak = bme.pressure / 100.0;                             // hPa
-		float vlhkost = bme.humidity;                                  // %
-		float teplota = bme.temperature;                               // °C
-		float plyn = bme.gas_resistance / 1000.0;                      // KOhms
-		float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
 
-		publishMQTT(temperature_topic, String(teplota));
+		if (stream && (millis() - lastFrame) >= 200) {
+			if (postFrame()) {
+				lastFrame = millis();
+			} else {
+				Serial.println("Failed to send");
+				Serial.print(wifiConnected);
+				Serial.print(" ");
+				Serial.print(mobileDataConnected);
+				Serial.print(" \"");
+				Serial.print(SSID);
+				Serial.print("\" \"");
+				Serial.print(PASSWORD);
+				Serial.println("\"");
+			}
+		}
 	}
-
-	if (stream && (millis() - lastFrame) >= 200) {
-		Serial.println("Sending frame...");
-		if (!postFrame()) Serial.println("Failed to send");
-	}
-
+    delay(1000);
 	Serial.clearWriteError();
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1185,36 +1386,3 @@ void loop() {
   delay(5000);
 }
 */ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/* ////////////////////////////////////////////// Test Camera /////////////////////////////////////////////
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println();
-  Serial.println("T-SIMCAM minimal startup");
-
-  if (!setupCamera()) {
-    Serial.println("Camera init failed");
-    while (true) delay(1000);
-  }
-
-  if (!sdInit()) {
-    Serial.println("SD init failed - continuing without SD");
-  }
-
-  camera_fb_t *fb = captureFrame();
-  if (!fb) {
-    Serial.println("Camera capture failed (fb null)");
-    return;
-  }
-
-  sdWritePhoto("/photo.jpg", fb);
-  esp_camera_fb_return(fb);
-  Serial.println("Capture done.");
-}
-
-void loop() {
-  Serial.print(".");
-  delay(5000);
-}
-*/ ////////////////////////////////////////////////////////////////////////////////////////////////////////

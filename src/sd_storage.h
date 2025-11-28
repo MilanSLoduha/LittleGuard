@@ -3,6 +3,7 @@
 #include "FS.h"
 #include "esp_camera.h"
 #include "camera.h"
+#include <Preferences.h>
 
 extern bool sdReady;
 
@@ -10,3 +11,8 @@ void sdInit();
 bool sdWritePhoto(const char *path, camera_fb_t *fb);
 bool savePhotoNumber(int num);
 uint16_t loadPhotoNumber();
+bool loadWIFICredentials(String &ssid, String &password);
+bool firstTime();
+bool saveWIFICredentials(String &ssid, String &password);
+void saveFirstTime();
+bool saveCameraSetup(String &macAddress);

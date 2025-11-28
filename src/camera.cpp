@@ -54,12 +54,12 @@ bool setupCamera() {
 #endif
 
 	if (psramFound()) {
-		config.frame_size = FRAMESIZE_VGA; // 640x480 namiesto UXGA 1600x1200
-		config.jpeg_quality = 12;          // Mierne horšia kvalita pre menšiu veľkosť
+		config.frame_size = FRAMESIZE_VGA;
+		config.jpeg_quality = 12;
 		config.fb_count = 2;
 	} else {
-		config.frame_size = FRAMESIZE_QVGA; // 320x240
-		config.jpeg_quality = 15;
+		config.frame_size = FRAMESIZE_VGA;
+		config.jpeg_quality = 12;
 		config.fb_count = 1;
 		config.fb_location = CAMERA_FB_IN_DRAM;
 	}

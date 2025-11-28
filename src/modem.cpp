@@ -1,7 +1,11 @@
 #include "modem.h"
 
+#ifdef DUMP_AT_COMMANDS
 StreamDebugger debugger(SerialAT, Serial);
 TinyGsm modem(debugger);
+#else
+TinyGsm modem(SerialAT);
+#endif
 
 const uint8_t mqtt_client_id = 0;
 uint32_t check_connect_millis = 0;
