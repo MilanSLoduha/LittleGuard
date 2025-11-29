@@ -5,6 +5,8 @@
 #include "modem.h"
 #include "mqtt_server.h"
 #include "sd_storage.h"
+#include "device_id.h"
+#include "topics.h"
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -112,14 +114,11 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 	String message = "";
 
 	// Získaj MAC adresu zariadenia
-	uint8_t mac[6];
-	esp_efuse_mac_get_default(mac);
-	char macStr[18];
-	sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	String macStr = getDeviceMacPretty();
 
 	if (wifiConnected && pairing.length() > 0) {
 		pendingPairingCode = pairing;
-		pendingMacAddress = String(macStr);
+		pendingMacAddress = macStr;
 		pendingSSID = ssid;
 		pendingPassword = password;
 		pairingPending = true;
@@ -137,7 +136,7 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 		Serial.println("Pairing task created");
 	} else if (mobileDataConnected && pairing.length() > 0) {
 		pendingPairingCode = pairing;
-		pendingMacAddress = String(macStr);
+		pendingMacAddress = macStr;
 		pendingSSID = ssid;
 		pendingPassword = password;
 		pairingPending = true;
@@ -326,7 +325,7 @@ void processPairingRequest() {
 
 	if (!success) {
 		Serial.println("HTTP failed, trying MQTT...");
-		if(publishMQTT(settings_topic, jsonPayload)) {
+		if(publishMQTT(settingsTopic, jsonPayload)) {
 			saveCameraSetup(pendingMacAddress);
 			saveFirstTime();
 		}

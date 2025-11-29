@@ -228,3 +228,58 @@ bool detectDoubleReset() {
 	dr_last_boot_us = now;
 	return detected;
 }
+
+bool saveCameraSettingsToPrefs(const String &json) {
+	prefs.begin("camset", false);
+	prefs.putString("json", json);
+	prefs.end();
+	return true;
+}
+
+bool loadCameraSettingsFromPrefs(String &json) {
+	prefs.begin("camset", true);
+	json = prefs.getString("json", "");
+	prefs.end();
+	return json.length() > 0;
+}
+
+bool saveCameraSettingsToSD(const String &json) {
+	if (!sdReady) {
+		sdInit();
+		if (!sdReady) {
+			return false;
+		}
+	}
+
+	SD.remove("/cam_settings.json");
+	File file = SD.open("/cam_settings.json", FILE_WRITE);
+	if (!file) {
+		Serial.println("Failed to open cam_settings.json for writing");
+		return false;
+	}
+
+	file.print(json);
+	file.close();
+	return true;
+}
+
+bool loadCameraSettingsFromSD(String &json) {
+	if (!sdReady) {
+		sdInit();
+		if (!sdReady) {
+			return false;
+		}
+	}
+	if (!SD.exists("/cam_settings.json")) {
+		return false;
+	}
+
+	File file = SD.open("/cam_settings.json", FILE_READ);
+	if (!file) {
+		Serial.println("Failed to open cam_settings.json for reading");
+		return false;
+	}
+	json = file.readString();
+	file.close();
+	return json.length() > 0;
+}

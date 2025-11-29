@@ -1,5 +1,15 @@
 #include "mqtt_server.h"
 #include "modem.h"
+#include "topics.h"
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+extern bool publishMQTT(String topic, String message);
+extern bool wifiConnected;
+extern WiFiClientSecure espClient;
+extern PubSubClient client;
+extern bool mobileDataConnected;
 
 const char *broker_host = MQTT_SERVER;
 const uint16_t broker_port = MQTT_PORT;
@@ -8,13 +18,254 @@ const char *broker_password = MQTT_PASSWORD;
 const char *client_id = "T-SIMCAM-LTE";
 bool stream = false;
 
-const char *temperature_topic = TEMPERATURE_TOPIC;
-const char *motion_topic = MOTION_TOPIC;
-const char *last_motion_topic = LAST_MOTION_TOPIC;
-const char *command_topic = COMMAND_TOPIC;
-const char *settings_topic = SETTINGS_TOPIC;
-const char *stream_topic = STREAM_CNTRL_TOPIC;
-const char *snapshot_topic = SNAPSHOT_TOPIC;
+struct CameraSettings {
+	String mode;
+	String resolution;
+	int quality;
+	int brightness;
+	int contrast;
+	bool hFlip;
+	bool hwDownscale;
+	bool awb;
+	bool aec;
+	String phoneNumber;
+	bool sendSMS;
+	bool sendEmail;
+	bool monday;
+	bool tuesday;
+	bool wednesday;
+	bool thursday;
+	bool friday;
+	bool saturday;
+	bool sunday;
+	String startTime;
+	String endTime;
+};
+
+static CameraSettings makeDefaultSettings() {
+	CameraSettings cfg;
+	cfg.mode = "mode1";
+	cfg.resolution = "5"; // VGA default
+	cfg.quality = 12;
+	cfg.brightness = 0;
+	cfg.contrast = 0;
+	cfg.hFlip = false;
+	cfg.hwDownscale = false;
+	cfg.awb = true;
+	cfg.aec = true;
+	cfg.phoneNumber = "";
+	cfg.sendSMS = false;
+	cfg.sendEmail = false;
+	cfg.monday = false;
+	cfg.tuesday = false;
+	cfg.wednesday = false;
+	cfg.thursday = false;
+	cfg.friday = false;
+	cfg.saturday = false;
+	cfg.sunday = false;
+	cfg.startTime = "00:00";
+	cfg.endTime = "23:59";
+	return cfg;
+}
+
+CameraSettings currentSettings = makeDefaultSettings();
+
+template <typename Setter>
+static void setIfPresent(const JsonVariantConst &root, const char *key, Setter setter, bool &updated) {
+	JsonVariantConst v = root[key];
+	if (!v.isNull()) {
+		setter(v);
+		updated = true;
+	}
+}
+
+static framesize_t optionToFrameSize(const String &option) {
+	if (option == "1") return FRAMESIZE_UXGA;
+	if (option == "2") return FRAMESIZE_SXGA;
+	if (option == "3") return FRAMESIZE_XGA;
+	if (option == "4") return FRAMESIZE_SVGA;
+	if (option == "5") return FRAMESIZE_VGA;
+	if (option == "6") return FRAMESIZE_CIF;
+	return FRAMESIZE_VGA;
+}
+
+static String frameSizeToOption(framesize_t size) {
+	switch (size) {
+	case FRAMESIZE_UXGA:
+		return "1";
+	case FRAMESIZE_SXGA:
+		return "2";
+	case FRAMESIZE_XGA:
+		return "3";
+	case FRAMESIZE_SVGA:
+		return "4";
+	case FRAMESIZE_VGA:
+		return "5";
+	case FRAMESIZE_CIF:
+		return "6";
+	default:
+		return "5";
+	}
+}
+
+static void refreshSettingsFromSensor(CameraSettings &settings) {
+	if (!cameraReady) {
+		return;
+	}
+	sensor_t *sensor = esp_camera_sensor_get();
+	if (!sensor) {
+		return;
+	}
+
+	settings.resolution = frameSizeToOption((framesize_t)sensor->status.framesize);
+	settings.quality = sensor->status.quality;
+	settings.brightness = sensor->status.brightness;
+	settings.contrast = sensor->status.contrast;
+	settings.hFlip = sensor->status.hmirror;
+	settings.hwDownscale = sensor->status.dcw;
+	settings.awb = sensor->status.awb;
+	settings.aec = sensor->status.aec;
+}
+
+static bool applyCameraSettingsInternal(const CameraSettings &settings) {
+	if (!cameraReady) {
+		cameraReady = setupCamera();
+	}
+	sensor_t *sensor = esp_camera_sensor_get();
+	if (!sensor) {
+		Serial.println("Camera sensor not available for applying settings");
+		return false;
+	}
+
+	framesize_t frame = optionToFrameSize(settings.resolution);
+	bool ok = true;
+	ok &= sensor->set_framesize(sensor, frame) == 0;
+	ok &= sensor->set_quality(sensor, settings.quality) == 0;
+	ok &= sensor->set_brightness(sensor, settings.brightness) == 0;
+	ok &= sensor->set_contrast(sensor, settings.contrast) == 0;
+	ok &= sensor->set_hmirror(sensor, settings.hFlip) == 0;
+	ok &= sensor->set_dcw(sensor, settings.hwDownscale) == 0;
+	ok &= sensor->set_whitebal(sensor, settings.awb) == 0;
+	ok &= sensor->set_exposure_ctrl(sensor, settings.aec) == 0;
+
+	if (!ok) {
+		Serial.println("One or more camera settings failed to apply");
+	}
+	return ok;
+}
+
+static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &settings) {
+	bool updated = false;
+
+	setIfPresent(root, "mode", [&](JsonVariantConst v) { settings.mode = v.as<String>(); }, updated);
+	setIfPresent(root, "resolution", [&](JsonVariantConst v) { settings.resolution = v.as<String>(); }, updated);
+	setIfPresent(root, "quality", [&](JsonVariantConst v) { settings.quality = v.as<int>(); }, updated);
+	setIfPresent(root, "brightness", [&](JsonVariantConst v) { settings.brightness = v.as<int>(); }, updated);
+	setIfPresent(root, "contrast", [&](JsonVariantConst v) { settings.contrast = v.as<int>(); }, updated);
+	setIfPresent(root, "hFlip", [&](JsonVariantConst v) { settings.hFlip = v.as<bool>(); }, updated);
+	setIfPresent(root, "horizontalFlip", [&](JsonVariantConst v) { settings.hFlip = v.as<bool>(); }, updated);
+	setIfPresent(root, "hwDownscale", [&](JsonVariantConst v) { settings.hwDownscale = v.as<bool>(); }, updated);
+	setIfPresent(root, "awb", [&](JsonVariantConst v) { settings.awb = v.as<bool>(); }, updated);
+	setIfPresent(root, "aec", [&](JsonVariantConst v) { settings.aec = v.as<bool>(); }, updated);
+	setIfPresent(root, "phoneNumber", [&](JsonVariantConst v) { settings.phoneNumber = v.as<String>(); }, updated);
+	setIfPresent(root, "sendSMS", [&](JsonVariantConst v) { settings.sendSMS = v.as<bool>(); }, updated);
+	setIfPresent(root, "sendEmail", [&](JsonVariantConst v) { settings.sendEmail = v.as<bool>(); }, updated);
+	setIfPresent(root, "monday", [&](JsonVariantConst v) { settings.monday = v.as<bool>(); }, updated);
+	setIfPresent(root, "tuesday", [&](JsonVariantConst v) { settings.tuesday = v.as<bool>(); }, updated);
+	setIfPresent(root, "wednesday", [&](JsonVariantConst v) { settings.wednesday = v.as<bool>(); }, updated);
+	setIfPresent(root, "thursday", [&](JsonVariantConst v) { settings.thursday = v.as<bool>(); }, updated);
+	setIfPresent(root, "friday", [&](JsonVariantConst v) { settings.friday = v.as<bool>(); }, updated);
+	setIfPresent(root, "saturday", [&](JsonVariantConst v) { settings.saturday = v.as<bool>(); }, updated);
+	setIfPresent(root, "sunday", [&](JsonVariantConst v) { settings.sunday = v.as<bool>(); }, updated);
+	setIfPresent(root, "startTime", [&](JsonVariantConst v) { settings.startTime = v.as<String>(); }, updated);
+	setIfPresent(root, "endTime", [&](JsonVariantConst v) { settings.endTime = v.as<String>(); }, updated);
+
+	return updated;
+}
+
+static String serializeSettings(const CameraSettings &settings) {
+	JsonDocument doc;
+	doc["mode"] = settings.mode;
+	doc["resolution"] = settings.resolution;
+	doc["quality"] = settings.quality;
+	doc["brightness"] = settings.brightness;
+	doc["contrast"] = settings.contrast;
+	doc["hFlip"] = settings.hFlip;
+	doc["horizontalFlip"] = settings.hFlip;
+	doc["hwDownscale"] = settings.hwDownscale;
+	doc["awb"] = settings.awb;
+	doc["aec"] = settings.aec;
+	doc["phoneNumber"] = settings.phoneNumber;
+	doc["sendSMS"] = settings.sendSMS;
+	doc["sendEmail"] = settings.sendEmail;
+	doc["monday"] = settings.monday;
+	doc["tuesday"] = settings.tuesday;
+	doc["wednesday"] = settings.wednesday;
+	doc["thursday"] = settings.thursday;
+	doc["friday"] = settings.friday;
+	doc["saturday"] = settings.saturday;
+	doc["sunday"] = settings.sunday;
+	doc["startTime"] = settings.startTime;
+	doc["endTime"] = settings.endTime;
+
+	String json;
+	serializeJson(doc, json);
+	return json;
+}
+
+static void persistCameraSettings(const CameraSettings &settings) {
+	String json = serializeSettings(settings);
+	saveCameraSettingsToPrefs(json);
+	saveCameraSettingsToSD(json);
+}
+
+static bool loadSettingsFromStorage(CameraSettings &settings) {
+	String json;
+	if (!loadCameraSettingsFromPrefs(json)) {
+		if (!loadCameraSettingsFromSD(json)) {
+			return false;
+		}
+	}
+
+	JsonDocument doc;
+	DeserializationError error = deserializeJson(doc, json);
+	if (error) {
+		Serial.println("Failed to parse stored settings JSON: " + String(error.c_str()));
+		return false;
+	}
+
+	applyJsonToSettings(doc.as<JsonVariantConst>(), settings);
+	return true;
+}
+
+void publishSettingsState() {
+	String payload = serializeSettings(currentSettings);
+	if (!publishMQTT(settingsTopic, payload)) {
+		Serial.println("Failed to publish settings to MQTT");
+	} else {
+		Serial.println("Published current settings to MQTT");
+	}
+}
+
+void initCameraSettings() {
+	currentSettings = makeDefaultSettings();
+
+	CameraSettings stored = currentSettings;
+	refreshSettingsFromSensor(stored);
+	if (loadSettingsFromStorage(stored)) {
+		currentSettings = stored;
+		bool applied = applyCameraSettingsInternal(currentSettings);
+		if (applied) {
+			refreshSettingsFromSensor(currentSettings);
+		}
+	} else {
+		persistCameraSettings(currentSettings);
+	}
+}
+
+void mqtt_callback_wrapper(char *topic, uint8_t *payload, unsigned int len) {
+	mqtt_callback(topic, payload, len);
+}
 
 bool mqtt_connect_manualLTE() {
 	modem.sendAT("+CMQTTDISC=0,120"); // odpoj vsetky existujuce pripojenia
@@ -85,12 +336,66 @@ bool mqtt_connect_manualLTE() {
 }
 
 void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
-	Serial.println("MQTT Callback - Topic: " + String(topic) + ", Payload length: " + String(len));
-	if (strcmp(topic, command_topic) == 0) {
+	const char *root = MQTT_TOPIC_ROOT;
+	if (strncmp(topic, root, strlen(root)) != 0) {
+		Serial.println("Ignoring MQTT topic outside root: " + String(topic));
+		return;
+	}
 
-	} else if (strcmp(topic, stream_topic) == 0) {
-		stream = (payload[0] == '1');
-	} else if (strcmp(topic, snapshot_topic) == 0) {
+	if (len > 1600) {
+		Serial.println("MQTT payload too large, ignoring");
+		return;
+	}
+
+	Serial.println("MQTT Callback - Topic: " + String(topic) + ", Payload length: " + String(len));
+
+	String payloadStr;
+	payloadStr.reserve(len + 1);
+	for (uint32_t i = 0; i < len; i++) {
+		payloadStr += static_cast<char>(payload[i]);
+	}
+
+	if (strcmp(topic, commandTopic.c_str()) == 0) {
+		JsonDocument doc;
+		DeserializationError error = deserializeJson(doc, payloadStr);
+		if (error) {
+			Serial.println("Failed to parse command JSON: " + String(error.c_str()));
+			return;
+		}
+
+		const char *type = doc["type"] | "";
+		if (strcmp(type, "settings") == 0) {
+			CameraSettings updated = currentSettings;
+			bool changed = applyJsonToSettings(doc.as<JsonVariantConst>(), updated);
+			if (!changed) {
+				Serial.println("Settings command received but no fields changed");
+				return;
+			}
+
+			bool applied = applyCameraSettingsInternal(updated);
+			if (applied) {
+				refreshSettingsFromSensor(updated);
+			}
+			currentSettings = updated;
+			persistCameraSettings(currentSettings);
+			publishSettingsState();
+		} else if (strcmp(type, "get_settings") == 0) {
+			refreshSettingsFromSensor(currentSettings);
+			publishSettingsState();
+		} else {
+			Serial.println("Unknown command type: " + String(type));
+		}
+	} else if (strcmp(topic, streamTopic.c_str()) == 0) {
+		String ctrl = payloadStr;
+		ctrl.trim();
+		ctrl.toLowerCase();
+		if (ctrl.length() == 0) {
+			Serial.println("Stream control payload empty, ignoring");
+		} else {
+			stream = (ctrl == "1" || ctrl == "on" || ctrl == "true");
+			Serial.printf("Stream control payload='%s' -> stream=%d\n", ctrl.c_str(), stream);
+		}
+	} else if (strcmp(topic, snapshotTopic.c_str()) == 0) {
 
 		if (!cameraReady) {
 			if (!setupCamera()) {
@@ -128,4 +433,71 @@ void mqttPrepareLTE() {
 	modem.mqtt_begin(enableSSL, enableSNI);
 
 	modem.mqtt_set_certificate(HivemqRootCA);
+}
+
+bool ensureWifiMqtt() {
+	if (!wifiConnected) return false;
+	if (!client.connected()) {
+		espClient.stop(); // drop any stale TLS session
+		espClient.setInsecure();
+		espClient.setHandshakeTimeout(30);
+		client.setServer(MQTT_SERVER, MQTT_PORT);
+		client.setKeepAlive(60);
+		client.setBufferSize(2048);
+		client.setSocketTimeout(20);
+		if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
+			Serial.print("MQTT WiFi connect failed, rc=");
+			Serial.println(client.state());
+			return false;
+        }
+        Serial.println("MQTT WiFi connected (ensure)");
+        client.subscribe(commandTopic.c_str());
+        client.subscribe(streamTopic.c_str());
+        client.subscribe(snapshotTopic.c_str());
+        client.subscribe(settingsTopic.c_str());
+    }
+    return true;
+}
+
+bool publishMQTT(String topic, String message) {
+	bool published = false;
+
+	// LTE path first
+	if (mobileDataConnected) {
+		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
+
+		if (modem.waitResponse(2000) != 1) {
+			Serial.println("MQTT (LTE) disconnected, reconnecting...");
+			if (mqtt_connect_manualLTE()) {
+				modem.mqtt_set_callback(mqtt_callback);
+				modem.mqtt_subscribe(mqtt_client_id, temperatureTopic.c_str());
+				modem.mqtt_subscribe(mqtt_client_id, commandTopic.c_str());
+				modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
+				modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
+			} else {
+				Serial.println("MQTT (LTE) reconnect failed");
+				return false;
+			}
+		}
+
+		if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
+			Serial.println("Publish failed (LTE)");
+			return false;
+		}
+		return true;
+	}
+
+	// WiFi path
+	if (wifiConnected) {
+		if (!ensureWifiMqtt()) {
+			return false;
+		}
+
+		published = client.publish(topic.c_str(), message.c_str());
+		if (!published) {
+			Serial.println("Message publishing failed on WiFi MQTT path");
+		}
+	}
+
+	return published;
 }

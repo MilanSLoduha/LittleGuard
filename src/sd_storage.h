@@ -17,3 +17,7 @@ bool saveWIFICredentials(String &ssid, String &password);
 void saveFirstTime();
 bool saveCameraSetup(String &macAddress);
 bool detectDoubleReset();
+bool saveCameraSettingsToPrefs(const String &json);
+bool loadCameraSettingsFromPrefs(String &json);
+bool saveCameraSettingsToSD(const String &json);
+bool loadCameraSettingsFromSD(String &json);

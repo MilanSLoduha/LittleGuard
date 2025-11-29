@@ -224,152 +224,6 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 }
 */ //////////////////////////////////////////////////////////////////////////////////////////////
 
-/* /////////////////////////////////////////////// send sms //////////////////////////////////////////////
-
-#define TINY_GSM_MODEM_A7670
-#define LILYGO_T_SIMCAM
-
-#include <Arduino.h>
-#include "select_pins.h"  // All pin definitions and modem config
-
-#define SerialMon Serial
-#define SMS_TARGET "+421908199904"
-
-// Include TinyGSM (modem type already defined at top of file)
-#include <TinyGsmClient.h>
-
-#ifdef DUMP_AT_COMMANDS
-#include <StreamDebugger.h>
-StreamDebugger debugger(SerialAT, SerialMon);
-TinyGsm modem(debugger);
-#else
-TinyGsm modem(SerialAT);
-#endif
-
-
-// It depends on the operator whether to set up an APN. If some operators do not
-set up an APN,
-// they will be rejected when registering for the network. You need to ask the
-local operator for the specific APN.
-// APNs from other operators are welcome to submit PRs for filling.
-// #define NETWORK_APN     "CHN-CT"             //CHN-CT: China Telecom
-
-void setup()
-{
-    Serial.begin(115200);
-#ifdef BOARD_POWERON_PIN
-    pinMode(BOARD_POWERON_PIN, OUTPUT);
-    digitalWrite(BOARD_POWERON_PIN, HIGH);
-#endif
-
-    // Set modem reset pin ,reset modem
-#ifdef MODEM_RESET_PIN
-    pinMode(MODEM_RESET_PIN, OUTPUT);
-    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL); delay(100);
-    digitalWrite(MODEM_RESET_PIN, MODEM_RESET_LEVEL); delay(2600);
-    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
-#endif
-
-#ifdef MODEM_FLIGHT_PIN
-    // If there is an airplane mode control, you need to exit airplane mode
-    pinMode(MODEM_FLIGHT_PIN, OUTPUT);
-    digitalWrite(MODEM_FLIGHT_PIN, HIGH);
-#endif
-
-    // Pull down DTR to ensure the modem is not in sleep state
-    pinMode(MODEM_DTR_PIN, OUTPUT);
-    digitalWrite(MODEM_DTR_PIN, LOW);
-
-    // Turn on modem
-    pinMode(BOARD_PWRKEY_PIN, OUTPUT);
-    digitalWrite(BOARD_PWRKEY_PIN, LOW);
-    delay(100);
-    digitalWrite(BOARD_PWRKEY_PIN, HIGH);
-    delay(MODEM_POWERON_PULSE_WIDTH_MS);
-    digitalWrite(BOARD_PWRKEY_PIN, LOW);
-
-#ifdef MODEM_RING_PIN
-    // Set ring pin input
-    pinMode(MODEM_RING_PIN, INPUT_PULLUP);
-#endif
-
-    // Set modem baud
-    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
-
-    Serial.println("Start modem...");
-    delay(3000);
-
-    while (!modem.testAT()) {
-        delay(10);
-    }
-
-
-    // Wait PB DONE
-    Serial.println("Wait SMS Done.");
-    if (!modem.waitResponse(100000UL, "SMS DONE")) {
-        Serial.println("Can't wait from sms register ....");
-        return;
-    }
-
-
-#ifdef NETWORK_APN
-    Serial.printf("Set network apn : %s\n", NETWORK_APN);
-    if (!modem.setNetworkAPN(NETWORK_APN)) {
-        Serial.println("Set network apn error !");
-    }
-#endif
-
-
-    // Check network registration status and network signal status
-    int16_t sq ;
-    Serial.print("Wait for the modem to register with the network.");
-    RegStatus status = REG_NO_RESULT;
-    while (status == REG_NO_RESULT || status == REG_SEARCHING || status ==
-REG_UNREGISTERED) { status = modem.getRegistrationStatus(); switch (status) {
-        case REG_UNREGISTERED:
-        case REG_SEARCHING:
-            sq = modem.getSignalQuality();
-            Serial.printf("[%lu] Signal Quality:%d\n", millis() / 1000, sq);
-            delay(1000);
-            break;
-        case REG_DENIED:
-            Serial.println("Network registration was rejected, please check if
-the APN is correct"); return ; case REG_OK_HOME: Serial.println("Online
-registration successful"); break; case REG_OK_ROAMING: Serial.println("Network
-registration successful, currently in roaming mode"); break; default:
-            Serial.printf("Registration Status:%d\n", status);
-            delay(1000);
-            break;
-        }
-    }
-    Serial.println();
-
-
-    Serial.printf("Registration Status:%d\n", status);
-    delay(1000);
-
-    Serial.print("Init success, start to send message to  ");
-    Serial.println(SMS_TARGET);
-
-    String imei = modem.getIMEI();
-    bool res = modem.sendSMS(SMS_TARGET, String("Hello from ") + imei);
-    Serial.print("Send sms message ");
-    Serial.println(res ? "OK" : "fail");
-}
-
-void loop()
-{
-
-    if (SerialAT.available()) {
-        Serial.write(SerialAT.read());
-    }
-    if (Serial.available()) {
-        SerialAT.write(Serial.read());
-    }
-    delay(1);
-}
-*/
-
 /////////////////////////////////////////////// MAIN CODE ////////////////////////////////////////////////////
 #define TINY_GSM_MODEM_A7670
 #define TINY_GSM_RX_BUFFER 1024
@@ -396,6 +250,7 @@ void loop()
 #include "sd_storage.h"
 #include "secrets.h"
 #include "select_pins.h"
+#include "topics.h"
 #include <HTTPClient.h>
 #include <base64.h>
 
@@ -587,9 +442,9 @@ bool wifiSetup() {
 		Serial.print(".");
 	}
 	Serial.println();
-
+    
 	if (WiFi.status() == WL_CONNECTED) {
-		Serial.println(WiFi.localIP());
+        Serial.println(WiFi.localIP());
 		return true;
 	} else {
 		Serial.println("WiFi connection FAILED - continuing without WiFi");
@@ -597,58 +452,15 @@ bool wifiSetup() {
 	}
 }
 
-bool publishMQTT(String topic, String message) {
-	if (mobileDataConnected) {
-
-		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
-
-		if (modem.waitResponse(2000) != 1) {
-			Serial.println("MQTT disconnected, reconnecting...");
-			if (mqtt_connect_manualLTE()) {
-				modem.mqtt_set_callback(mqtt_callback);
-				modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
-				modem.mqtt_subscribe(mqtt_client_id, command_topic);
-				modem.mqtt_subscribe(mqtt_client_id, stream_topic);
-				modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
-			}
-		}
-
-		if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
-			Serial.println("Publish failed");
-			return false;
-		}
-		return true;
-
-	} else if (wifiConnected) {
-		if (!client.connected()) {
-			espClient.setInsecure();
-			if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
-				Serial.print("MQTT connection failed, rc=");
-				Serial.println(client.state());
-				delay(2000);
-				return false; 
-			}
-			Serial.println("MQTT reconnected, subscribing...");
-			client.subscribe(command_topic);
-			client.subscribe(stream_topic);
-			client.subscribe(snapshot_topic);
-		}
-
-		if (!client.publish(topic.c_str(), message.c_str())) {
-			Serial.println("Message publishing failed");
-			return false;
-		}
-		return true;
-	}
-	return false;
-}
-
 extern bool connectAbly() {
-	if (!wifiConnected || !mobileDataConnected) return false;
+	if (!wifiConnected) return false;
 
-	String url = "https://" + String(ABLY_HOST) + "/channels/";
+	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName;
 
-	http.begin(espClient, url);
+	WiFiClientSecure ablyClient;
+	ablyClient.setInsecure();
+
+	http.begin(ablyClient, url);
 	http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
 
 	int httpResponseCode = http.GET();
@@ -691,10 +503,13 @@ extern bool postFrame() {
 
 	esp_camera_fb_return(fb);
 
-	String url = "https://" + String(ABLY_HOST) + "/channels/camera-stream/messages";
+	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName + "/messages";
 
 	if (wifiConnected) {
-		http.begin(url);
+		WiFiClientSecure ablyClient;
+		ablyClient.setInsecure();
+
+		http.begin(ablyClient, url);
 		http.addHeader("Content-Type", "application/json");
 		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
 		http.setTimeout(15000);
@@ -810,6 +625,8 @@ void setup() {
 
 	sdInit();
 
+	initTopics();
+
 	firstRun = firstTime();
 	if (!firstRun) {
 		String ssidLoaded;
@@ -843,16 +660,31 @@ void setup() {
 			}
 			modem.mqtt_set_callback(mqtt_callback);
 
-			modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
-			modem.mqtt_subscribe(mqtt_client_id, command_topic);
-			modem.mqtt_subscribe(mqtt_client_id, stream_topic);
-			modem.mqtt_subscribe(mqtt_client_id, snapshot_topic);
+			modem.mqtt_subscribe(mqtt_client_id, temperatureTopic.c_str());
+			modem.mqtt_subscribe(mqtt_client_id, commandTopic.c_str());
+			modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
+			modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
+			modem.mqtt_subscribe(mqtt_client_id, settingsTopic.c_str());
 
 		} else {
 			espClient.setInsecure();
 			client.setServer(MQTT_SERVER, MQTT_PORT);
 			client.setKeepAlive(60);
-			client.setCallback(mqtt_callback);
+			client.setCallback(mqtt_callback_wrapper);
+			client.setBufferSize(2048);
+
+			if (!client.connected()) {
+				if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
+					Serial.print("MQTT WiFi connect failed, rc=");
+					Serial.println(client.state());
+				} else {
+					Serial.println("MQTT WiFi connected (initial)");
+					client.subscribe(commandTopic.c_str());
+					client.subscribe(streamTopic.c_str());
+					client.subscribe(snapshotTopic.c_str());
+					client.subscribe(settingsTopic.c_str());
+				}
+			}
 		}
 
 		// I2C
@@ -876,6 +708,7 @@ void setup() {
 		if (!cameraReady) {
 			Serial.println("Camera setup failed");
 		}
+		initCameraSettings();
 		bme680Ready = false; // sddddddddddddddddddddddddddddddd
 	} else {
 		setupModem();
@@ -915,7 +748,7 @@ void loop() {
 				Serial.println("Žiadny pohyb.");
 			}
 			lastMotionStatus = pirState;
-			publishMQTT(motion_topic, String(pirState));
+			publishMQTT(motionTopic, String(pirState));
 		}
 
 		if (bme680Ready) {
@@ -931,7 +764,7 @@ void loop() {
 			float plyn = bme.gas_resistance / 1000.0;                      // KOhms
 			float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
 
-			publishMQTT(temperature_topic, String(teplota));
+			publishMQTT(temperatureTopic, String(teplota));
 		}
 
 		if (stream && (millis() - lastFrame) >= 200) {
@@ -1341,33 +1174,3 @@ void camera_test()
 }
 */ /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/* ///////////////////////////////////////// I2C Scanner cez MCP23017 /////////////////////////////////////
-
-#include <Wire.h>
-#include <Adafruit_MCP23X17.h>
-
-void setup() {
-  Serial.begin(115200);
-  Wire.begin(43, 44); // SDA=GPIO43, SCL=GPIO44
-  Serial.println("I2C Scanner");
-}
-
-void loop() {
-  byte error, address;
-  int nDevices = 0;
-
-  Serial.println("Skenujem...");
-  for (address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-    if (error == 0) {
-      Serial.print("I2C zariadenie na adrese 0x");
-      if (address < 16) Serial.print("0");
-      Serial.println(address, HEX);
-      nDevices++;
-    }
-  }
-  if (nDevices == 0) Serial.println("Žiadne I2C zariadenia!");
-  delay(5000);
-}
-*/ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
