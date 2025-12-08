@@ -47,19 +47,6 @@ bool sdWritePhoto(const char *path, camera_fb_t *fb) {
 }
 
 bool savePhotoNumber(int num) {
-	// if(!sdReady) {
-	// 	sdInit();
-	// 	if(!sdReady) {
-	// 		Serial.println("kamo ono to neotvara sd kartu");
-	// 	}
-	// } 
-	// File file = SD.open("/photoNum.txt", FILE_WRITE);
-	// if (!file) {
-	// 	Serial.println("Failed to open file for writing");
-	// 	return false;
-	// }
-	// file.println(num);
-	// file.close();
 	prefs.begin("camera", false);
 	prefs.putInt("num", num);
 	prefs.end();
@@ -67,24 +54,6 @@ bool savePhotoNumber(int num) {
 }
 
 uint16_t loadPhotoNumber() {
-	// if(!sdReady) {
-	// 	sdInit();
-	// 	if(!sdReady) {
-	// 		Serial.println("kamo ono to neotvara sd kartu");
-	// 	}
-	// } 
-	// if (!SD.exists("/photoNum.txt")) {
-	// 	return 0;
-	// }
-
-	// File file = SD.open("/photoNum.txt", FILE_READ);
-	// if (!file) {
-	// 	Serial.println("Failed to open file for reading");
-	// 	return 999;
-	// }
-
-	// int num = file.parseInt();
-	// file.close();
 	prefs.begin("camera", true);
 	int num = prefs.getInt("num", 10000);
 	prefs.end();
@@ -92,29 +61,6 @@ uint16_t loadPhotoNumber() {
 }
 
 bool loadWIFICredentials(String &ssid, String &password) {
-	// if(!sdReady) {
-	// 	sdInit();
-	// 	if(!sdReady) {
-	// 		Serial.println("kamo ono to neotvara sd kartu");
-	// 	}
-	// } 
-	// if (!SD.exists("/wifiCr.txt")) {
-	// 	Serial.println("wifi.txt does not exist on SD");
-	// 	return false;
-	// }
-
-	// File file = SD.open("/wifiCr.txt", FILE_READ);
-	// if (!file) {
-	// 	Serial.println("Failed to open wifi.txt for reading");
-	// 	return false;
-	// }
-
-	// ssid = file.readStringUntil('\n');
-	// ssid.trim();
-	// password = file.readStringUntil('\n');
-	// password.trim();
-
-	// file.close();
 	prefs.begin("wifi", true);
 	ssid = prefs.getString("ssid", "");
 	password = prefs.getString("password", "");
@@ -124,13 +70,6 @@ bool loadWIFICredentials(String &ssid, String &password) {
 }
 
 bool firstTime() {
-	// if(!sdReady) {
-	// 	sdInit();
-	// 	if(!sdReady) {
-	// 		Serial.println("kamo ono to neotvara sd kartu");
-	// 	}
-	// } 
-	//return !SD.exists("/camSet.txt");
 	prefs.begin("wifi", true);
 	bool firstBoot = prefs.getBool("first", true);
 	prefs.end();
@@ -138,20 +77,6 @@ bool firstTime() {
 }
 
 bool saveWIFICredentials(String &ssid, String &password) {
-	// if(!sdReady) {
-	// 	sdInit();
-	// 	if(!sdReady) {
-	// 		Serial.println("kamo ono to neotvara sd kartu");
-	// 	}
-	// } 
-	// File file = SD.open("/wifiCr.txt", FILE_WRITE);
-	// if (!file) {
-	// 	Serial.println("Failed to open wifiCr.txt for writing");
-	// 	return false;
-	// }
-	// file.println(ssid);
-	// file.println(password);
-	// file.close();
 	prefs.begin("wifi", false);
 	prefs.putString("ssid", ssid);
 	prefs.putString("password", password);
@@ -216,14 +141,13 @@ bool saveCameraSetup(String &macAddress) {
 	return true;
 }
 
-// RTC-backed double-reset detector (non-blocking, 2.5s window)
 RTC_DATA_ATTR uint64_t dr_last_boot_us = 0;
 RTC_DATA_ATTR bool dr_armed = false;
 bool detectDoubleReset() {
-	uint64_t now = esp_timer_get_time(); // microseconds since boot
+	uint64_t now = esp_timer_get_time();
 	bool withinWindow = dr_armed && (now - dr_last_boot_us) < 2500000ULL; // 2.5s
 	bool detected = withinWindow;
-	// re-arm for next boot
+
 	dr_armed = true;
 	dr_last_boot_us = now;
 	return detected;

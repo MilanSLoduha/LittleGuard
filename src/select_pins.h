@@ -65,15 +65,18 @@
 // MCP23017 Pins
 #define MCP_ADDRESS 0x20
 
-#define MCP_PIR_PIN 2   // GPA2 na MCP23017
+#define MCP_PIR_PIN 8   // GPB0 na MCP23017
 
-#define MCP_SDA_PIN 0   // GPA0 na MCP23017 (SDA pre DS3231)
-#define MCP_SCL_PIN 1   // GPA1 na MCP23017 (SCL pre DS3231)
+#define OUTPUT1Y   0
+#define OUTPUT2Y   1
+#define OUTPUT3Y   2
+#define OUTPUT4Y   3
 
-#define OUTPUT1   4
-#define OUTPUT2   5
-#define OUTPUT3   6
-#define OUTPUT4   7
+#define OUTPUT1X    4
+#define OUTPUT2X    5
+#define OUTPUT3X    6
+#define OUTPUT4X    7
+
 #define DELAY 2 
 
 //WIFI

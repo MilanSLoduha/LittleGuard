@@ -33,7 +33,6 @@ bool setupCamera() {
 	config.fb_location = CAMERA_FB_IN_PSRAM;
 	config.grab_mode = CAMERA_GRAB_LATEST;
 
-	// debug prints
 	Serial.println("Camera pin configuration:");
 	Serial.printf("PWDN=%d RESET=%d XCLK=%d SIOD=%d SIOC=%d\n", PWDN_GPIO_NUM, RESET_GPIO_NUM, XCLK_GPIO_NUM, SIOD_GPIO_NUM, SIOC_GPIO_NUM);
 

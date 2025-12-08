@@ -4,6 +4,7 @@
 #include "secrets.h"
 #include "camera.h"
 #include "sd_storage.h"
+#include <base64.h>
 
 extern const char *broker_host;
 extern const uint16_t broker_port;
@@ -22,3 +23,6 @@ void mqttPrepareLTE();
 void initCameraSettings();
 bool ensureWifiMqtt();
 bool publishMQTT(String topic, String message);
+bool postFrame();
+bool connectAbly();
+void setMotorAngle(int angleX, int angleY);

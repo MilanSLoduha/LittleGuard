@@ -229,7 +229,6 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 #define TINY_GSM_RX_BUFFER 1024
 // #define DUMP_AT_COMMANDS
 
-#include <Adafruit_MCP23X17.h>
 #include <Arduino.h>
 #include <ESP.h>
 #include <Preferences.h>
@@ -246,13 +245,12 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 #include "esp_task_wdt.h"
 #include "modem.h"
 #include "mqtt_server.h"
-#include "rtc_time.h"
+#include "connected_devices.h"
 #include "sd_storage.h"
 #include "secrets.h"
 #include "select_pins.h"
 #include "topics.h"
 #include <HTTPClient.h>
-#include <base64.h>
 
 #define SerialMon Serial
 #define SMS_TARGET "+421908199904"
@@ -262,13 +260,9 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 // TinyGsmHttpsComm<TinyGsmA7670, ASR_A7670X> https(modem);
 
 int lastMotionStatus = -1;
-int currentMotorAngle = 0; // Aktuálna pozícia motora
 
 // BME680 musí byť za camera.h kvôli konfliktu sensor_t
 // senzor v namespace
-#define sensor_t adafruit_sensor_t
-#include "Adafruit_BME680.h"
-#undef sensor_t
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -281,14 +275,13 @@ bool firstRun;
 
 long long lastFrame = 0;
 
-HTTPClient http;
+extern HTTPClient http; 
 
-Adafruit_MCP23X17 mcp;
+
 bool mcpReady = false;
-RTC_DS3231 rtc;
-bool rtcReady = false;
-Adafruit_BME680 bme;
-bool bme680Ready = false;
+
+extern bool rtcReady;
+extern bool bme680Ready;
 #define SEALEVELPRESSURE_HPA (1013.25)
 #define BME680_ADDR 0x77
 
@@ -298,8 +291,6 @@ void startCameraServer();
 void processPairingRequest();
 
 void factoryReset() {
-	Serial.println("Factory reset: clearing saved WiFi/camera settings");
-
 	Preferences resetPrefs;
 
 	resetPrefs.begin("wifi", false);
@@ -317,61 +308,6 @@ void factoryReset() {
 	doubleResetCounter = 0;
 	delay(150);
 	ESP.restart();
-}
-
-void setMotorAngle(int angle) {
-	angle += 180;
-	int steps = (abs(currentMotorAngle - angle) * 512) / 360;
-	// 512 == 360 degrees
-
-	if (currentMotorAngle > angle) {
-		for (int j = 0; j < steps; j++) {
-			mcp.digitalWrite(OUTPUT1, HIGH);
-			mcp.digitalWrite(OUTPUT2, LOW);
-			mcp.digitalWrite(OUTPUT3, LOW);
-			mcp.digitalWrite(OUTPUT4, HIGH);
-			delay(DELAY);
-			mcp.digitalWrite(OUTPUT1, LOW);
-			mcp.digitalWrite(OUTPUT2, LOW);
-			mcp.digitalWrite(OUTPUT3, HIGH);
-			mcp.digitalWrite(OUTPUT4, HIGH);
-			delay(DELAY);
-			mcp.digitalWrite(OUTPUT1, LOW);
-			mcp.digitalWrite(OUTPUT2, HIGH);
-			mcp.digitalWrite(OUTPUT3, HIGH);
-			mcp.digitalWrite(OUTPUT4, LOW);
-			delay(DELAY);
-			mcp.digitalWrite(OUTPUT1, HIGH);
-			mcp.digitalWrite(OUTPUT2, HIGH);
-			mcp.digitalWrite(OUTPUT3, LOW);
-			mcp.digitalWrite(OUTPUT4, LOW);
-			delay(DELAY);
-		}
-	} else {
-		for (int i = 0; i < steps; i++) {
-			mcp.digitalWrite(OUTPUT1, HIGH);
-			mcp.digitalWrite(OUTPUT2, HIGH);
-			mcp.digitalWrite(OUTPUT3, LOW);
-			mcp.digitalWrite(OUTPUT4, LOW);
-			delay(DELAY);
-			mcp.digitalWrite(OUTPUT1, LOW);
-			mcp.digitalWrite(OUTPUT2, HIGH);
-			mcp.digitalWrite(OUTPUT3, HIGH);
-			mcp.digitalWrite(OUTPUT4, LOW);
-			delay(DELAY);
-			mcp.digitalWrite(OUTPUT1, LOW);
-			mcp.digitalWrite(OUTPUT2, LOW);
-			mcp.digitalWrite(OUTPUT3, HIGH);
-			mcp.digitalWrite(OUTPUT4, HIGH);
-			delay(DELAY);
-			mcp.digitalWrite(OUTPUT1, HIGH);
-			mcp.digitalWrite(OUTPUT2, LOW);
-			mcp.digitalWrite(OUTPUT3, LOW);
-			mcp.digitalWrite(OUTPUT4, HIGH);
-			delay(DELAY);
-		}
-	}
-	currentMotorAngle = angle;
 }
 
 void webServer() {
@@ -399,40 +335,6 @@ void webServer() {
 	Serial.println("' to connect");
 }
 
-void setupSensors() {
-	bme680Ready = false;
-	if (bme.begin(0x77, &Wire)) {
-		bme680Ready = true;
-	}
-
-	if (bme680Ready) {
-		bme.setTemperatureOversampling(BME680_OS_8X);
-		bme.setHumidityOversampling(BME680_OS_2X);
-		bme.setPressureOversampling(BME680_OS_4X);
-		bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-		bme.setGasHeater(320, 150); // 320°C for 150 ms
-
-		if (!bme.performReading()) {
-			Serial.println("WARNING: BME680 detected but failed to perform reading");
-			bme680Ready = false;
-		}
-	} else {
-		Serial.println("WARNING: BME680 not found at address 0x77");
-	}
-
-	if (!rtc.begin(&Wire)) {
-		Serial.println("WARNING: RTC DS3231 not found at 0x68");
-	}
-
-	mcp.pinMode(MCP_PIR_PIN, INPUT);
-
-	// motor 1
-	mcp.pinMode(OUTPUT1, OUTPUT);
-	mcp.pinMode(OUTPUT2, OUTPUT);
-	mcp.pinMode(OUTPUT3, OUTPUT);
-	mcp.pinMode(OUTPUT4, OUTPUT);
-}
-
 bool wifiSetup() {
 	WiFi.begin(SSID, PASSWORD);
 
@@ -442,9 +344,9 @@ bool wifiSetup() {
 		Serial.print(".");
 	}
 	Serial.println();
-    
+
 	if (WiFi.status() == WL_CONNECTED) {
-        Serial.println(WiFi.localIP());
+		Serial.println(WiFi.localIP());
 		return true;
 	} else {
 		Serial.println("WiFi connection FAILED - continuing without WiFi");
@@ -452,174 +354,12 @@ bool wifiSetup() {
 	}
 }
 
-extern bool connectAbly() {
-	if (!wifiConnected) return false;
-
-	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName;
-
-	WiFiClientSecure ablyClient;
-	ablyClient.setInsecure();
-
-	http.begin(ablyClient, url);
-	http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
-
-	int httpResponseCode = http.GET();
-
-	if (httpResponseCode != 200 && httpResponseCode != 201) {
-		Serial.print("Ably connection failed, HTTP response code: ");
-		Serial.println(httpResponseCode);
-		http.end();
-		return false;
-	}
-
-	http.end();
-	return true;
-}
-
-extern bool postFrame() {
-	if (!cameraReady || (!wifiConnected && !mobileDataConnected)) return false;
-
-	camera_fb_t *fb = captureFrame();
-	if (!fb) {
-		Serial.println("Camera capture failed (fb null)");
-		return false;
-	}
-
-	Serial.printf("Frame: %d bytes, %dx%d\n", fb->len, fb->width, fb->height);
-
-	String encoded = base64::encode(fb->buf, fb->len);
-	Serial.printf("Base64: %d bytes\n", encoded.length());
-
-	String payload = "{";
-	payload += "\"name\":\"frame\",";
-	payload += "\"data\":{";
-	payload += "\"image\":\"" + encoded + "\",";
-	payload += "\"timestamp\":" + String(millis()) + ",";
-	payload += "\"width\":" + String(fb->width) + ",";
-	payload += "\"height\":" + String(fb->height);
-	payload += "}}";
-
-	Serial.printf("Payload: %d bytes\n", payload.length());
-
-	esp_camera_fb_return(fb);
-
-	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName + "/messages";
-
-	if (wifiConnected) {
-		WiFiClientSecure ablyClient;
-		ablyClient.setInsecure();
-
-		http.begin(ablyClient, url);
-		http.addHeader("Content-Type", "application/json");
-		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
-		http.setTimeout(15000);
-
-		int httpResponseCode = http.POST(payload);
-		if (httpResponseCode != 200 && httpResponseCode != 201) {
-			Serial.print("Ably POST failed, HTTP response code: ");
-			Serial.println(httpResponseCode);
-			String response = http.getString();
-			Serial.println("Response body: " + response);
-			http.end();
-			return false;
-		}
-		http.end();
-	} else if (mobileDataConnected) {
-		modem.sendAT("+HTTPTERM");
-		modem.waitResponse(3000);
-
-		modem.sendAT("+HTTPINIT");
-		if (modem.waitResponse(10000) != 1) {
-			Serial.println("HTTP init failed");
-			return false;
-		}
-
-		modem.sendAT("+HTTPPARA=\"URL\",\"" + url + "\"");
-		if (modem.waitResponse(3000) != 1) {
-			Serial.println("HTTP set URL failed");
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		modem.sendAT("+HTTPPARA=\"CONTENT\",\"application/json\"");
-		if (modem.waitResponse(3000) != 1) {
-			Serial.println("HTTP set content type failed");
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		modem.sendAT("+HTTPPARA=\"USERDATA\",\"Authorization: Basic " + String(ABLY_AUTH_BASIC) + "\"");
-		if (modem.waitResponse(3000) != 1) {
-			Serial.println("HTTP set authorization failed");
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"15000\"");
-		modem.waitResponse();
-
-		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",10000");
-		if (modem.waitResponse("DOWNLOAD") != 1) {
-			Serial.println("HTTP data failed");
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		modem.stream.write(payload.c_str(), payload.length());
-		if (modem.waitResponse() != 1) {
-			Serial.println("HTTP data send failed");
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		modem.sendAT("+HTTPACTION=1");
-		if (modem.waitResponse(30000, "+HTTPACTION:") != 1) {
-			Serial.println("HTTP action failed");
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		String response = modem.stream.readStringUntil('\n');
-		int c1 = response.indexOf(',');
-		int c2 = response.indexOf(',', c1 + 1);
-		int method = response.substring(0, c1).toInt();
-		int status = response.substring(c1 + 1, c2).toInt();
-		int length = response.substring(c2 + 1).toInt();
-
-		if (status != 200 && status != 201) {
-			Serial.print("Ably POST failed via LTE, HTTP response code: ");
-			Serial.println(status);
-			if (length > 0) {
-				modem.sendAT("+HTTPREAD=0," + String(length));
-				if (modem.waitResponse(3000) == 1) {
-					String body = modem.stream.readStringUntil('\n');
-					Serial.println("Response body: " + body);
-				}
-			}
-			modem.sendAT("+HTTPTERM");
-			modem.waitResponse();
-			return false;
-		}
-
-		modem.sendAT("+HTTPTERM");
-		modem.waitResponse();
-	}
-	return true;
-}
-
 void setup() {
 	Serial.begin(115200);
 	delay(100);
 
-
 	bool shouldFactoryReset = detectDoubleReset();
-	if (shouldFactoryReset) { //3500delay
+	if (shouldFactoryReset) { // 3500delay
 		factoryReset();
 	}
 
@@ -633,8 +373,8 @@ void setup() {
 		String passLoaded;
 		bool credentials = loadWIFICredentials(ssidLoaded, passLoaded);
 
-        Serial.println("SSID: \"" + ssidLoaded + "\"");
-        Serial.println("PASSWORD: \"" + passLoaded + "\"");
+		Serial.println("SSID: \"" + ssidLoaded + "\"");
+		Serial.println("PASSWORD: \"" + passLoaded + "\"");
 		if (!sdReady) {
 			Serial.println("SD Card initialization failed! (loading WiFi from NVS anyway)");
 		}
@@ -709,7 +449,7 @@ void setup() {
 			Serial.println("Camera setup failed");
 		}
 		initCameraSettings();
-		bme680Ready = false; // sddddddddddddddddddddddddddddddd
+		//bme680Ready = false; // sddddddddddddddddddddddddddddddd
 	} else {
 		setupModem();
 		initSIM();
@@ -720,7 +460,7 @@ void setup() {
 		if (!mqtt_connect_manualLTE()) {
 			Serial.println("MQTT connection failed!");
 		} else {
-            modem.mqtt_set_callback(mqtt_callback);
+			modem.mqtt_set_callback(mqtt_callback);
 		}
 
 		webServer();
@@ -730,7 +470,6 @@ void setup() {
 void loop() {
 	if (!firstRun) {
 		esp_task_wdt_reset();
-		// processPairingRequest(); // Odstránené - párovanie sa deje len pri prvom spustení
 
 		if (wifiConnected) client.loop();
 		if (mobileDataConnected) modem.mqtt_handle();
@@ -740,7 +479,6 @@ void loop() {
 
 		int pirState = mcp.digitalRead(MCP_PIR_PIN);
 
-		
 		if (lastMotionStatus != pirState) {
 			if (pirState == HIGH) {
 				Serial.println("Pohyb detekovaný!");
@@ -783,7 +521,7 @@ void loop() {
 			}
 		}
 	}
-    delay(1000);
+	delay(1000);
 	Serial.clearWriteError();
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -798,7 +536,7 @@ void loop() {
 
 
 HardwareSerial SerialAT(1);
-HTTPClient http_client;
+// HTTPClient http_client už nepotrebujeme, používame extern http
 
 void mic_init(void);
 void check_sound(void);
@@ -1173,4 +911,3 @@ void camera_test()
     // delay(5000);
 }
 */ /////////////////////////////////////////////////////////////////////////////////////////////////////////
-

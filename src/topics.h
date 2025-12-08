@@ -11,8 +11,6 @@ extern String streamTopic;
 extern String snapshotTopic;
 extern String ablyChannelName;
 
-// Initializes topic strings using stored device MAC; call once in setup
 void initTopics();
 
-// Returns lowercase MAC used for topics
 String getTopicMac();

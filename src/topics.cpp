@@ -19,7 +19,7 @@ static String buildTopic(const char *suffix) {
 }
 
 void initTopics() {
-	topicMac = getDeviceMac(); // lowercase, no separators
+	topicMac = getDeviceMac();
 
 	String root = MQTT_TOPIC_ROOT;
 	root.trim();

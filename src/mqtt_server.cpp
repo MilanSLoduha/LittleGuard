@@ -1,15 +1,18 @@
 #include "mqtt_server.h"
 #include "modem.h"
 #include "topics.h"
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <PubSubClient.h>
+#include <WiFiClientSecure.h>
 
 extern bool publishMQTT(String topic, String message);
 extern bool wifiConnected;
 extern WiFiClientSecure espClient;
 extern PubSubClient client;
 extern bool mobileDataConnected;
+
+HTTPClient http;
 
 const char *broker_host = MQTT_SERVER;
 const uint16_t broker_port = MQTT_PORT;
@@ -24,6 +27,8 @@ struct CameraSettings {
 	int quality;
 	int brightness;
 	int contrast;
+	int motorX;
+	int motorY;
 	bool hFlip;
 	bool hwDownscale;
 	bool awb;
@@ -49,6 +54,8 @@ static CameraSettings makeDefaultSettings() {
 	cfg.quality = 12;
 	cfg.brightness = 0;
 	cfg.contrast = 0;
+	cfg.motorX = 0;
+	cfg.motorY = 0;
 	cfg.hFlip = false;
 	cfg.hwDownscale = false;
 	cfg.awb = true;
@@ -70,8 +77,7 @@ static CameraSettings makeDefaultSettings() {
 
 CameraSettings currentSettings = makeDefaultSettings();
 
-template <typename Setter>
-static void setIfPresent(const JsonVariantConst &root, const char *key, Setter setter, bool &updated) {
+template <typename Setter> static void setIfPresent(const JsonVariantConst &root, const char *key, Setter setter, bool &updated) {
 	JsonVariantConst v = root[key];
 	if (!v.isNull()) {
 		setter(v);
@@ -162,6 +168,8 @@ static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &se
 	setIfPresent(root, "quality", [&](JsonVariantConst v) { settings.quality = v.as<int>(); }, updated);
 	setIfPresent(root, "brightness", [&](JsonVariantConst v) { settings.brightness = v.as<int>(); }, updated);
 	setIfPresent(root, "contrast", [&](JsonVariantConst v) { settings.contrast = v.as<int>(); }, updated);
+	setIfPresent(root, "motorX", [&](JsonVariantConst v) { settings.motorX = v.as<int>(); }, updated);
+	setIfPresent(root, "motorY", [&](JsonVariantConst v) { settings.motorY = v.as<int>(); }, updated);
 	setIfPresent(root, "hFlip", [&](JsonVariantConst v) { settings.hFlip = v.as<bool>(); }, updated);
 	setIfPresent(root, "horizontalFlip", [&](JsonVariantConst v) { settings.hFlip = v.as<bool>(); }, updated);
 	setIfPresent(root, "hwDownscale", [&](JsonVariantConst v) { settings.hwDownscale = v.as<bool>(); }, updated);
@@ -190,6 +198,8 @@ static String serializeSettings(const CameraSettings &settings) {
 	doc["quality"] = settings.quality;
 	doc["brightness"] = settings.brightness;
 	doc["contrast"] = settings.contrast;
+	doc["motorX"] = settings.motorX;
+	doc["motorY"] = settings.motorY;
 	doc["hFlip"] = settings.hFlip;
 	doc["horizontalFlip"] = settings.hFlip;
 	doc["hwDownscale"] = settings.hwDownscale;
@@ -379,6 +389,19 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 			currentSettings = updated;
 			persistCameraSettings(currentSettings);
 			publishSettingsState();
+		} else if (strcmp(type, "motor") == 0) {
+			Serial.println("Raw motor command JSON: " + payloadStr);
+			
+			// Frontend sends "pan" and "tilt", map them to x and y
+			int x = doc["pan"] | currentSettings.motorX;
+			int y = doc["tilt"] | currentSettings.motorY;
+			
+			Serial.printf("Motor command: pan=%d, tilt=%d\n", x, y);
+			
+			currentSettings.motorX = x;
+			currentSettings.motorY = y;
+			setMotorAngle(x, y);
+			persistCameraSettings(currentSettings);
 		} else if (strcmp(type, "get_settings") == 0) {
 			refreshSettingsFromSensor(currentSettings);
 			publishSettingsState();
@@ -438,7 +461,7 @@ void mqttPrepareLTE() {
 bool ensureWifiMqtt() {
 	if (!wifiConnected) return false;
 	if (!client.connected()) {
-		espClient.stop(); // drop any stale TLS session
+		espClient.stop();
 		espClient.setInsecure();
 		espClient.setHandshakeTimeout(30);
 		client.setServer(MQTT_SERVER, MQTT_PORT);
@@ -449,14 +472,14 @@ bool ensureWifiMqtt() {
 			Serial.print("MQTT WiFi connect failed, rc=");
 			Serial.println(client.state());
 			return false;
-        }
-        Serial.println("MQTT WiFi connected (ensure)");
-        client.subscribe(commandTopic.c_str());
-        client.subscribe(streamTopic.c_str());
-        client.subscribe(snapshotTopic.c_str());
-        client.subscribe(settingsTopic.c_str());
-    }
-    return true;
+		}
+		Serial.println("MQTT WiFi connected (ensure)");
+		client.subscribe(commandTopic.c_str());
+		client.subscribe(streamTopic.c_str());
+		client.subscribe(snapshotTopic.c_str());
+		client.subscribe(settingsTopic.c_str());
+	}
+	return true;
 }
 
 bool publishMQTT(String topic, String message) {
@@ -500,4 +523,165 @@ bool publishMQTT(String topic, String message) {
 	}
 
 	return published;
+}
+
+bool postFrame() {
+	if (!cameraReady || (!wifiConnected && !mobileDataConnected)) return false;
+
+	camera_fb_t *fb = captureFrame();
+	if (!fb) {
+		Serial.println("Camera capture failed (fb null)");
+		return false;
+	}
+
+	Serial.printf("Frame: %d bytes, %dx%d\n", fb->len, fb->width, fb->height);
+
+	String encoded = base64::encode(fb->buf, fb->len);
+	Serial.printf("Base64: %d bytes\n", encoded.length());
+
+	String payload = "{";
+	payload += "\"name\":\"frame\",";
+	payload += "\"data\":{";
+	payload += "\"image\":\"" + encoded + "\",";
+	payload += "\"timestamp\":" + String(millis()) + ",";
+	payload += "\"width\":" + String(fb->width) + ",";
+	payload += "\"height\":" + String(fb->height);
+	payload += "}}";
+
+	Serial.printf("Payload: %d bytes\n", payload.length());
+
+	esp_camera_fb_return(fb);
+
+	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName + "/messages";
+
+	if (wifiConnected) {
+		WiFiClientSecure ablyClient;
+		ablyClient.setInsecure();
+
+		http.begin(ablyClient, url);
+		http.addHeader("Content-Type", "application/json");
+		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
+		http.setTimeout(15000);
+
+		int httpResponseCode = http.POST(payload);
+		if (httpResponseCode != 200 && httpResponseCode != 201) {
+			Serial.print("Ably POST failed, HTTP response code: ");
+			Serial.println(httpResponseCode);
+			String response = http.getString();
+			Serial.println("Response body: " + response);
+			http.end();
+			return false;
+		}
+		http.end();
+	} else if (mobileDataConnected) {
+		modem.sendAT("+HTTPTERM");
+		modem.waitResponse(3000);
+
+		modem.sendAT("+HTTPINIT");
+		if (modem.waitResponse(10000) != 1) {
+			Serial.println("HTTP init failed");
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"URL\",\"" + url + "\"");
+		if (modem.waitResponse(3000) != 1) {
+			Serial.println("HTTP set URL failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"CONTENT\",\"application/json\"");
+		if (modem.waitResponse(3000) != 1) {
+			Serial.println("HTTP set content type failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"USERDATA\",\"Authorization: Basic " + String(ABLY_AUTH_BASIC) + "\"");
+		if (modem.waitResponse(3000) != 1) {
+			Serial.println("HTTP set authorization failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"15000\"");
+		modem.waitResponse();
+
+		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",10000");
+		if (modem.waitResponse("DOWNLOAD") != 1) {
+			Serial.println("HTTP data failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.stream.write(payload.c_str(), payload.length());
+		if (modem.waitResponse() != 1) {
+			Serial.println("HTTP data send failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPACTION=1");
+		if (modem.waitResponse(30000, "+HTTPACTION:") != 1) {
+			Serial.println("HTTP action failed");
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		String response = modem.stream.readStringUntil('\n');
+		int c1 = response.indexOf(',');
+		int c2 = response.indexOf(',', c1 + 1);
+		int method = response.substring(0, c1).toInt();
+		int status = response.substring(c1 + 1, c2).toInt();
+		int length = response.substring(c2 + 1).toInt();
+
+		if (status != 200 && status != 201) {
+			Serial.print("Ably POST failed via LTE, HTTP response code: ");
+			Serial.println(status);
+			if (length > 0) {
+				modem.sendAT("+HTTPREAD=0," + String(length));
+				if (modem.waitResponse(3000) == 1) {
+					String body = modem.stream.readStringUntil('\n');
+					Serial.println("Response body: " + body);
+				}
+			}
+			modem.sendAT("+HTTPTERM");
+			modem.waitResponse();
+			return false;
+		}
+
+		modem.sendAT("+HTTPTERM");
+		modem.waitResponse();
+	}
+	return true;
+}
+
+extern bool connectAbly() {
+	if (!wifiConnected) return false;
+
+	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName;
+
+	WiFiClientSecure ablyClient;
+	ablyClient.setInsecure();
+
+	http.begin(ablyClient, url);
+	http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
+
+	int httpResponseCode = http.GET();
+
+	if (httpResponseCode != 200 && httpResponseCode != 201) {
+		Serial.print("Ably connection failed, HTTP response code: ");
+		Serial.println(httpResponseCode);
+		http.end();
+		return false;
+	}
+
+	http.end();
+	return true;
 }
