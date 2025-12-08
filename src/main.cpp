@@ -242,10 +242,10 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 
 #include "WiFi.h"
 #include "camera.h"
+#include "connected_devices.h"
 #include "esp_task_wdt.h"
 #include "modem.h"
 #include "mqtt_server.h"
-#include "connected_devices.h"
 #include "sd_storage.h"
 #include "secrets.h"
 #include "select_pins.h"
@@ -253,7 +253,6 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 #include <HTTPClient.h>
 
 #define SerialMon Serial
-#define SMS_TARGET "+421908199904"
 
 // StreamDebugger debugger(SerialAT, Serial);
 // TinyGsm modem(debugger);
@@ -275,8 +274,7 @@ bool firstRun;
 
 long long lastFrame = 0;
 
-extern HTTPClient http; 
-
+extern HTTPClient http;
 
 bool mcpReady = false;
 
@@ -441,7 +439,7 @@ void setup() {
 
 		// webServer();
 		connectAbly(); //--------
-		// bool res = modem.sendSMS(SMS_TARGET, String("SDADASDASD"));
+
 		// Serial.println(res ? "" : "fail");
 
 		cameraReady = setupCamera();
@@ -449,7 +447,7 @@ void setup() {
 			Serial.println("Camera setup failed");
 		}
 		initCameraSettings();
-		//bme680Ready = false; // sddddddddddddddddddddddddddddddd
+		// bme680Ready = false; // sddddddddddddddddddddddddddddddd
 	} else {
 		setupModem();
 		initSIM();
@@ -482,6 +480,14 @@ void loop() {
 		if (lastMotionStatus != pirState) {
 			if (pirState == HIGH) {
 				Serial.println("Pohyb detekovaný!");
+
+
+				if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
+					sendEmailNotification("LittleGuard - Detekcia pohybu", "Pohyb bol detekovaný na vašom zariadení LittleGuard.");
+				}
+				if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
+					bool res = modem.sendSMS(currentSettings.phoneNumber, String("LittleGuard: Pohyb detekovaný!"));
+				}
 			} else {
 				Serial.println("Žiadny pohyb.");
 			}

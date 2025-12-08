@@ -6,6 +6,36 @@
 #include "sd_storage.h"
 #include <base64.h>
 
+struct CameraSettings {
+	String mode;
+	String resolution;
+	int quality;
+	int brightness;
+	int contrast;
+	int motorX;
+	int motorY;
+	bool hFlip;
+	bool vFlip;
+	bool hwDownscale;
+	bool awb;
+	bool aec;
+	String phoneNumber;
+	String emailAddress;
+	bool sendSMS;
+	bool sendEmail;
+	bool monday;
+	bool tuesday;
+	bool wednesday;
+	bool thursday;
+	bool friday;
+	bool saturday;
+	bool sunday;
+	String startTime;
+	String endTime;
+};
+
+extern CameraSettings currentSettings;
+
 extern const char *broker_host;
 extern const uint16_t broker_port;
 extern const char *broker_username;
@@ -26,3 +56,6 @@ bool publishMQTT(String topic, String message);
 bool postFrame();
 bool connectAbly();
 void setMotorAngle(int angleX, int angleY);
+void publishSettingsState();
+bool sendEmailNotification(String subject, String body);
+bool sendSMSNotification(String phoneNumber, String message);

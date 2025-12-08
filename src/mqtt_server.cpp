@@ -21,32 +21,6 @@ const char *broker_password = MQTT_PASSWORD;
 const char *client_id = "T-SIMCAM-LTE";
 bool stream = false;
 
-struct CameraSettings {
-	String mode;
-	String resolution;
-	int quality;
-	int brightness;
-	int contrast;
-	int motorX;
-	int motorY;
-	bool hFlip;
-	bool hwDownscale;
-	bool awb;
-	bool aec;
-	String phoneNumber;
-	bool sendSMS;
-	bool sendEmail;
-	bool monday;
-	bool tuesday;
-	bool wednesday;
-	bool thursday;
-	bool friday;
-	bool saturday;
-	bool sunday;
-	String startTime;
-	String endTime;
-};
-
 static CameraSettings makeDefaultSettings() {
 	CameraSettings cfg;
 	cfg.mode = "mode1";
@@ -57,10 +31,12 @@ static CameraSettings makeDefaultSettings() {
 	cfg.motorX = 0;
 	cfg.motorY = 0;
 	cfg.hFlip = false;
+	cfg.vFlip = false;
 	cfg.hwDownscale = false;
 	cfg.awb = true;
 	cfg.aec = true;
 	cfg.phoneNumber = "";
+	cfg.emailAddress = "";
 	cfg.sendSMS = false;
 	cfg.sendEmail = false;
 	cfg.monday = false;
@@ -128,6 +104,7 @@ static void refreshSettingsFromSensor(CameraSettings &settings) {
 	settings.brightness = sensor->status.brightness;
 	settings.contrast = sensor->status.contrast;
 	settings.hFlip = sensor->status.hmirror;
+	settings.vFlip = sensor->status.vflip;
 	settings.hwDownscale = sensor->status.dcw;
 	settings.awb = sensor->status.awb;
 	settings.aec = sensor->status.aec;
@@ -150,6 +127,7 @@ static bool applyCameraSettingsInternal(const CameraSettings &settings) {
 	ok &= sensor->set_brightness(sensor, settings.brightness) == 0;
 	ok &= sensor->set_contrast(sensor, settings.contrast) == 0;
 	ok &= sensor->set_hmirror(sensor, settings.hFlip) == 0;
+	ok &= sensor->set_vflip(sensor, settings.vFlip) == 0;
 	ok &= sensor->set_dcw(sensor, settings.hwDownscale) == 0;
 	ok &= sensor->set_whitebal(sensor, settings.awb) == 0;
 	ok &= sensor->set_exposure_ctrl(sensor, settings.aec) == 0;
@@ -172,10 +150,13 @@ static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &se
 	setIfPresent(root, "motorY", [&](JsonVariantConst v) { settings.motorY = v.as<int>(); }, updated);
 	setIfPresent(root, "hFlip", [&](JsonVariantConst v) { settings.hFlip = v.as<bool>(); }, updated);
 	setIfPresent(root, "horizontalFlip", [&](JsonVariantConst v) { settings.hFlip = v.as<bool>(); }, updated);
+	setIfPresent(root, "vFlip", [&](JsonVariantConst v) { settings.vFlip = v.as<bool>(); }, updated);
+	setIfPresent(root, "verticalFlip", [&](JsonVariantConst v) { settings.vFlip = v.as<bool>(); }, updated);
 	setIfPresent(root, "hwDownscale", [&](JsonVariantConst v) { settings.hwDownscale = v.as<bool>(); }, updated);
 	setIfPresent(root, "awb", [&](JsonVariantConst v) { settings.awb = v.as<bool>(); }, updated);
 	setIfPresent(root, "aec", [&](JsonVariantConst v) { settings.aec = v.as<bool>(); }, updated);
 	setIfPresent(root, "phoneNumber", [&](JsonVariantConst v) { settings.phoneNumber = v.as<String>(); }, updated);
+	setIfPresent(root, "emailAddress", [&](JsonVariantConst v) { settings.emailAddress = v.as<String>(); }, updated);
 	setIfPresent(root, "sendSMS", [&](JsonVariantConst v) { settings.sendSMS = v.as<bool>(); }, updated);
 	setIfPresent(root, "sendEmail", [&](JsonVariantConst v) { settings.sendEmail = v.as<bool>(); }, updated);
 	setIfPresent(root, "monday", [&](JsonVariantConst v) { settings.monday = v.as<bool>(); }, updated);
@@ -202,10 +183,13 @@ static String serializeSettings(const CameraSettings &settings) {
 	doc["motorY"] = settings.motorY;
 	doc["hFlip"] = settings.hFlip;
 	doc["horizontalFlip"] = settings.hFlip;
+	doc["vFlip"] = settings.vFlip;
+	doc["verticalFlip"] = settings.vFlip;
 	doc["hwDownscale"] = settings.hwDownscale;
 	doc["awb"] = settings.awb;
 	doc["aec"] = settings.aec;
 	doc["phoneNumber"] = settings.phoneNumber;
+	doc["emailAddress"] = settings.emailAddress;
 	doc["sendSMS"] = settings.sendSMS;
 	doc["sendEmail"] = settings.sendEmail;
 	doc["monday"] = settings.monday;
@@ -391,13 +375,13 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 			publishSettingsState();
 		} else if (strcmp(type, "motor") == 0) {
 			Serial.println("Raw motor command JSON: " + payloadStr);
-			
+
 			// Frontend sends "pan" and "tilt", map them to x and y
 			int x = doc["pan"] | currentSettings.motorX;
 			int y = doc["tilt"] | currentSettings.motorY;
-			
+
 			Serial.printf("Motor command: pan=%d, tilt=%d\n", x, y);
-			
+
 			currentSettings.motorX = x;
 			currentSettings.motorY = y;
 			setMotorAngle(x, y);
@@ -683,5 +667,107 @@ extern bool connectAbly() {
 	}
 
 	http.end();
+	return true;
+}
+
+bool sendEmailNotification(String subject, String body) {
+	if (currentSettings.emailAddress.length() == 0) {
+		Serial.println("No email address configured");
+		return false;
+	}
+
+	if (!wifiConnected) {
+		Serial.println("WiFi not connected");
+		return false;
+	}
+
+	WiFiClientSecure emailClient;
+	emailClient.setInsecure();
+
+	if (!emailClient.connect("smtp.gmail.com", 465)) {
+		Serial.println("SMTP connection failed");
+		return false;
+	}
+
+	emailClient.readStringUntil('\n'); // Read server greeting
+
+	emailClient.println("EHLO ESP32");
+	delay(500);
+	while (emailClient.available())
+		emailClient.read();
+
+	emailClient.println("AUTH LOGIN");
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	String email = "littleguard.notification@gmail.com";
+	String emailB64 = base64::encode((uint8_t *)email.c_str(), email.length());
+	emailClient.println(emailB64);
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	String appPassword = "obehrwzdanojdegx";
+	String passB64 = base64::encode((uint8_t *)appPassword.c_str(), appPassword.length());
+	emailClient.println(passB64);
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	emailClient.println("MAIL FROM:<littleguard.notification@gmail.com>");
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	emailClient.println("RCPT TO:<" + currentSettings.emailAddress + ">");
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	emailClient.println("DATA");
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	emailClient.println("From: LittleGuard <littleguard.notification@gmail.com>");
+	emailClient.println("To: " + currentSettings.emailAddress);
+	emailClient.println("Subject: " + subject);
+	emailClient.println("Content-Type: text/plain; charset=UTF-8");
+	emailClient.println();
+	emailClient.println(body);
+	emailClient.println(".");
+	delay(500);
+	emailClient.readStringUntil('\n');
+
+	emailClient.println("QUIT");
+	emailClient.stop();
+
+	Serial.println("Email sent to: " + currentSettings.emailAddress);
+	return true;
+}
+
+bool sendSMSNotification(String phoneNumber, String message) {
+	if (phoneNumber.length() == 0) {
+		Serial.println("No phone number configured");
+		return false;
+	}
+
+	modem.sendAT("+CMGF=1");
+	if (modem.waitResponse(5000) != 1) {
+		Serial.println("Failed to set SMS text mode");
+		return false;
+	}
+
+	// Odoslanie SMS
+	modem.sendAT("+CMGS=\"" + phoneNumber + "\"");
+	if (modem.waitResponse(5000, ">") != 1) {
+		Serial.println("Failed to start SMS send");
+		return false;
+	}
+
+	modem.stream.print(message);
+	modem.stream.write(0x1A); // Ctrl+Z na ukončenie SMS
+
+	if (modem.waitResponse(60000) != 1) {
+		Serial.println("Failed to send SMS");
+		return false;
+	}
+
+	Serial.println("SMS sent successfully to: " + phoneNumber);
 	return true;
 }
