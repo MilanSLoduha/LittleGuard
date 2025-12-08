@@ -24,8 +24,16 @@ void printTime(DateTime &now) {
 }
 
 String stringTime(DateTime &now) {
-	String cas = String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second()) + " " + String(now.day()) + ". " + String(now.month()) + ". " + String(now.year());
+	String cas = String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second()) + "   " + String(now.day()) + ". " + String(now.month()) + ". " + String(now.year());
 	return cas;
+}
+
+void setRTCTime() {
+	if (!rtcReady) {
+		return;
+	}
+
+	rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 }
 
 void setMotorAngle(int angleX, int angleY) {
@@ -81,7 +89,7 @@ void setMotorAngle(int angleX, int angleY) {
 	}
 	currentXMotorAngle = angleX;
 
-	//y min -90 -> max 90
+	// y min -90 -> max 90
 	steps = (abs(currentYMotorAngle - angleY) * 512) / 360;
 	// 512 == 360 degrees
 	if (currentYMotorAngle > angleY) {
@@ -156,7 +164,9 @@ void setupSensors() {
 	}
 
 	if (!rtc.begin(&Wire)) {
-		Serial.println("WARNING: RTC DS3231 not found at 0x68");
+		rtcReady = false;
+	} else {
+		rtcReady = true;
 	}
 
 	mcp.pinMode(MCP_PIR_PIN, INPUT);

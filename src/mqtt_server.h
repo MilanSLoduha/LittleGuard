@@ -1,9 +1,9 @@
 #pragma once
-#include <Arduino.h>
 #include "HivemqRootCA.h"
-#include "secrets.h"
 #include "camera.h"
 #include "sd_storage.h"
+#include "secrets.h"
+#include <Arduino.h>
 #include <base64.h>
 
 struct CameraSettings {
@@ -32,6 +32,7 @@ struct CameraSettings {
 	bool sunday;
 	String startTime;
 	String endTime;
+	int sensorInterval;
 };
 
 extern CameraSettings currentSettings;
@@ -57,5 +58,4 @@ bool postFrame();
 bool connectAbly();
 void setMotorAngle(int angleX, int angleY);
 void publishSettingsState();
-bool sendEmailNotification(String subject, String body);
 bool sendSMSNotification(String phoneNumber, String message);

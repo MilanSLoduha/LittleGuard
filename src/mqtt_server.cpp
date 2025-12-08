@@ -1,4 +1,5 @@
 #include "mqtt_server.h"
+#include "connected_devices.h"
 #include "modem.h"
 #include "topics.h"
 #include <ArduinoJson.h>
@@ -11,6 +12,10 @@ extern bool wifiConnected;
 extern WiFiClientSecure espClient;
 extern PubSubClient client;
 extern bool mobileDataConnected;
+extern int lastMotionStatus;
+extern String lastMotionTime;
+extern String lastSensorData;
+extern Adafruit_MCP23X17 mcp;
 
 HTTPClient http;
 
@@ -48,6 +53,7 @@ static CameraSettings makeDefaultSettings() {
 	cfg.sunday = false;
 	cfg.startTime = "00:00";
 	cfg.endTime = "23:59";
+	cfg.sensorInterval = 5;
 	return cfg;
 }
 
@@ -168,6 +174,7 @@ static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &se
 	setIfPresent(root, "sunday", [&](JsonVariantConst v) { settings.sunday = v.as<bool>(); }, updated);
 	setIfPresent(root, "startTime", [&](JsonVariantConst v) { settings.startTime = v.as<String>(); }, updated);
 	setIfPresent(root, "endTime", [&](JsonVariantConst v) { settings.endTime = v.as<String>(); }, updated);
+	setIfPresent(root, "sensorInterval", [&](JsonVariantConst v) { settings.sensorInterval = v.as<int>(); }, updated);
 
 	return updated;
 }
@@ -201,6 +208,7 @@ static String serializeSettings(const CameraSettings &settings) {
 	doc["sunday"] = settings.sunday;
 	doc["startTime"] = settings.startTime;
 	doc["endTime"] = settings.endTime;
+	doc["sensorInterval"] = settings.sensorInterval;
 
 	String json;
 	serializeJson(doc, json);
@@ -387,43 +395,47 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 			setMotorAngle(x, y);
 			persistCameraSettings(currentSettings);
 		} else if (strcmp(type, "get_settings") == 0) {
-			refreshSettingsFromSensor(currentSettings);
-			publishSettingsState();
-		} else {
-			Serial.println("Unknown command type: " + String(type));
+		refreshSettingsFromSensor(currentSettings);
+		publishSettingsState();
+
+		int pirState = mcp.digitalRead(MCP_PIR_PIN);
+		publishMQTT(motionTopic, String(pirState));
+
+		if (lastMotionTime.length() > 0) {
+			publishMQTT(lastMotionTopic, lastMotionTime);
+		}
+
+		if (lastSensorData.length() > 0) {
+			publishMQTT(temperatureTopic, lastSensorData);
+		}
+	} else {
+		Serial.println("Unknown command type: " + String(type));
 		}
 	} else if (strcmp(topic, streamTopic.c_str()) == 0) {
 		String ctrl = payloadStr;
 		ctrl.trim();
 		ctrl.toLowerCase();
-		if (ctrl.length() == 0) {
-			Serial.println("Stream control payload empty, ignoring");
-		} else {
+		if (ctrl.length() != 0) {
 			stream = (ctrl == "1" || ctrl == "on" || ctrl == "true");
-			Serial.printf("Stream control payload='%s' -> stream=%d\n", ctrl.c_str(), stream);
 		}
 	} else if (strcmp(topic, snapshotTopic.c_str()) == 0) {
 
 		if (!cameraReady) {
 			if (!setupCamera()) {
-				Serial.println("Camera init failed");
 				return;
 			}
 		}
 		if (!sdReady) {
 			sdInit();
 			if (!sdReady) {
-				Serial.println("SD init failed");
 				return;
 			}
 		}
 
 		camera_fb_t *fb = captureFrame();
 		if (!fb) {
-			Serial.println("Camera capture failed (fb null)");
 			return;
 		}
-		Serial.println("Ulozilo to fotku " + String(photoNumber));
 		sdWritePhoto(("/photo" + String(photoNumber) + ".jpg").c_str(), fb);
 		esp_camera_fb_return(fb);
 		photoNumber++;
@@ -453,11 +465,8 @@ bool ensureWifiMqtt() {
 		client.setBufferSize(2048);
 		client.setSocketTimeout(20);
 		if (!client.connect("ESP32Client", MQTT_USER, MQTT_PASSWORD)) {
-			Serial.print("MQTT WiFi connect failed, rc=");
-			Serial.println(client.state());
 			return false;
 		}
-		Serial.println("MQTT WiFi connected (ensure)");
 		client.subscribe(commandTopic.c_str());
 		client.subscribe(streamTopic.c_str());
 		client.subscribe(snapshotTopic.c_str());
@@ -474,7 +483,6 @@ bool publishMQTT(String topic, String message) {
 		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
 
 		if (modem.waitResponse(2000) != 1) {
-			Serial.println("MQTT (LTE) disconnected, reconnecting...");
 			if (mqtt_connect_manualLTE()) {
 				modem.mqtt_set_callback(mqtt_callback);
 				modem.mqtt_subscribe(mqtt_client_id, temperatureTopic.c_str());
@@ -482,13 +490,11 @@ bool publishMQTT(String topic, String message) {
 				modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
 				modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
 			} else {
-				Serial.println("MQTT (LTE) reconnect failed");
 				return false;
 			}
 		}
 
 		if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
-			Serial.println("Publish failed (LTE)");
 			return false;
 		}
 		return true;
@@ -501,9 +507,6 @@ bool publishMQTT(String topic, String message) {
 		}
 
 		published = client.publish(topic.c_str(), message.c_str());
-		if (!published) {
-			Serial.println("Message publishing failed on WiFi MQTT path");
-		}
 	}
 
 	return published;
@@ -514,7 +517,6 @@ bool postFrame() {
 
 	camera_fb_t *fb = captureFrame();
 	if (!fb) {
-		Serial.println("Camera capture failed (fb null)");
 		return false;
 	}
 
@@ -667,107 +669,5 @@ extern bool connectAbly() {
 	}
 
 	http.end();
-	return true;
-}
-
-bool sendEmailNotification(String subject, String body) {
-	if (currentSettings.emailAddress.length() == 0) {
-		Serial.println("No email address configured");
-		return false;
-	}
-
-	if (!wifiConnected) {
-		Serial.println("WiFi not connected");
-		return false;
-	}
-
-	WiFiClientSecure emailClient;
-	emailClient.setInsecure();
-
-	if (!emailClient.connect("smtp.gmail.com", 465)) {
-		Serial.println("SMTP connection failed");
-		return false;
-	}
-
-	emailClient.readStringUntil('\n'); // Read server greeting
-
-	emailClient.println("EHLO ESP32");
-	delay(500);
-	while (emailClient.available())
-		emailClient.read();
-
-	emailClient.println("AUTH LOGIN");
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	String email = "littleguard.notification@gmail.com";
-	String emailB64 = base64::encode((uint8_t *)email.c_str(), email.length());
-	emailClient.println(emailB64);
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	String appPassword = "obehrwzdanojdegx";
-	String passB64 = base64::encode((uint8_t *)appPassword.c_str(), appPassword.length());
-	emailClient.println(passB64);
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	emailClient.println("MAIL FROM:<littleguard.notification@gmail.com>");
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	emailClient.println("RCPT TO:<" + currentSettings.emailAddress + ">");
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	emailClient.println("DATA");
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	emailClient.println("From: LittleGuard <littleguard.notification@gmail.com>");
-	emailClient.println("To: " + currentSettings.emailAddress);
-	emailClient.println("Subject: " + subject);
-	emailClient.println("Content-Type: text/plain; charset=UTF-8");
-	emailClient.println();
-	emailClient.println(body);
-	emailClient.println(".");
-	delay(500);
-	emailClient.readStringUntil('\n');
-
-	emailClient.println("QUIT");
-	emailClient.stop();
-
-	Serial.println("Email sent to: " + currentSettings.emailAddress);
-	return true;
-}
-
-bool sendSMSNotification(String phoneNumber, String message) {
-	if (phoneNumber.length() == 0) {
-		Serial.println("No phone number configured");
-		return false;
-	}
-
-	modem.sendAT("+CMGF=1");
-	if (modem.waitResponse(5000) != 1) {
-		Serial.println("Failed to set SMS text mode");
-		return false;
-	}
-
-	// Odoslanie SMS
-	modem.sendAT("+CMGS=\"" + phoneNumber + "\"");
-	if (modem.waitResponse(5000, ">") != 1) {
-		Serial.println("Failed to start SMS send");
-		return false;
-	}
-
-	modem.stream.print(message);
-	modem.stream.write(0x1A); // Ctrl+Z na ukončenie SMS
-
-	if (modem.waitResponse(60000) != 1) {
-		Serial.println("Failed to send SMS");
-		return false;
-	}
-
-	Serial.println("SMS sent successfully to: " + phoneNumber);
 	return true;
 }

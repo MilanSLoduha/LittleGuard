@@ -1,229 +1,3 @@
-/* ////////////////////////////////////// LTE network and MQTT test code //////////////////////////////////
-#include <Arduino.h>
-
-#define TINY_GSM_MODEM_A7670
-#define TINY_GSM_RX_BUFFER 1024
-// #define DUMP_AT_COMMANDS
-
-#include "secrets.h"
-#include "HivemqRootCA.h"
-#include <TinyGsmClient.h>
-#include "select_pins.h"
-
-#include <StreamDebugger.h>
-StreamDebugger debugger(SerialAT, Serial);
-TinyGsm modem(debugger);
-
-const char *broker_host = MQTT_SERVER;
-const uint16_t broker_port = 8883;
-const char *broker_username = MQTT_USER;
-const char *broker_password = MQTT_PASSWORD;
-const char *client_id = "T-SIMCAM-LTE";
-
-const char *temperature_topic = TEMPERATURE_TOPIC;
-const char *motion_topic = MOTION_TOPIC;
-
-const uint8_t mqtt_client_id = 0;
-uint32_t check_connect_millis = 0;
-
-bool mqtt_connect_manual() {
-    modem.sendAT("+CMQTTDISC=0,120"); // odpoj vsetky existujuce pripojenia
-    modem.waitResponse(5000);
-    delay(500);
-
-    modem.sendAT("+CMQTTREL=0"); // Uvolneine vsetkych zdrojov klienta
-    modem.waitResponse(5000);
-    delay(500);
-
-    modem.sendAT("+CMQTTSTOP"); // Stop MQTT sluzby
-    modem.waitResponse(5000);
-    delay(2000);
-
-    modem.sendAT("+CMQTTSTART"); // Spustenie MQTT sluzby
-    if(modem.waitResponse(10000) != 1) {
-        Serial.println("Failed to start MQTT service");
-        return false;
-    }
-    delay(1000);
-
-    modem.sendAT("+CMQTTACCQ=0,\"", client_id, "\",1"); // ziskanie MQTT klienta
-    if(modem.waitResponse(5000) != 1) {
-        Serial.println("Failed to acquire MQTT client");
-        return false;
-    }
-
-    modem.sendAT("+CMQTTCFG=\"version\",0,4"); // nastav MQTT verziu 4 = 3.1.1
-    if(modem.waitResponse() != 1) {
-        Serial.println("Failed to set MQTT version");
-        return false;
-    }
-
-    modem.sendAT("+CSSLCFG=\"sslversion\",0,4");  // nastav SSL verziu 4 =
-TLS 1.2 if(modem.waitResponse() != 1) { Serial.println("Failed to set SSL
-version");
-    }
-
-    modem.sendAT("+CSSLCFG=\"enableSNI\",0,1");  // Povol Server Name Indication
-    if(modem.waitResponse() != 1) {
-        Serial.println("Failed to enable SNI");
-    }
-
-    modem.sendAT("+CSSLCFG=\"authmode\",0,0");  // 0 = bez autentigikacie
-servera if(modem.waitResponse() != 1) { Serial.println("Failed to set auth
-mode");
-    }
-
-    Serial.println("Enabling SSL for MQTT...");
-    modem.sendAT("+CMQTTSSLCFG=0,0");  // SSL pre MQTT - client_id=0,
-ssl_ctx_index=0 if(modem.waitResponse() != 1) { Serial.println("SSL config
-failed!"); return false;
-    }
-
-    modem.sendAT("+CMQTTCONNECT=0,\"tcp://", broker_host, ":",
-String(broker_port),
-                 "\",60,1,\"", broker_username, "\",\"", broker_password, "\"");
-
-    if(modem.waitResponse(30000) != 1) {
-        Serial.println(" MQTT SSL connection failed!");
-
-        modem.sendAT("+CMQTTCONNECT?"); // Debug info
-        modem.waitResponse(2000);
-
-        return false;
-    }
-
-    return true;
-}
-
-void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
-  Serial.println(topic);
-  for (int i = 0; i < len; i++) {
-      Serial.print((char)payload[i]);
-  }
-}
-
-void setup() {
-    Serial.begin(115200);
-    delay(2000);
-
-    SerialAT.begin(115200, SERIAL_8N1, PCIE_RX_PIN, PCIE_TX_PIN);
-
-    pinMode(PWR_ON_PIN, OUTPUT);
-    digitalWrite(PWR_ON_PIN, HIGH);
-    delay(300);
-
-
-    pinMode(PCIE_PWR_PIN, OUTPUT);
-    digitalWrite(PCIE_PWR_PIN, LOW);
-    delay(100);
-    digitalWrite(PCIE_PWR_PIN, HIGH);
-    delay(MODEM_PWRON_PWMS);
-    digitalWrite(PCIE_PWR_PIN, LOW);
-
-    int retry = 0;
-    while (!modem.testAT(1000)) {
-        Serial.print(".");
-        if (retry++ > 30) {
-            // Restart
-            digitalWrite(PCIE_PWR_PIN, LOW);
-            delay(100);
-            digitalWrite(PCIE_PWR_PIN, HIGH);
-            delay(MODEM_PWRON_PWMS);
-            digitalWrite(PCIE_PWR_PIN, LOW);
-            retry = 0;
-        }
-    }
-
-    SimStatus sim = SIM_ERROR;
-    while (sim != SIM_READY) {
-        sim = modem.getSimStatus();
-        if(sim == SIM_READY) {
-            break;
-        } else if(sim == SIM_LOCKED) {
-            Serial.println("SIM locked");
-        }
-        delay(1000);
-    }
-
-    if(!modem.setNetworkAPN("o2internet")) {
-        Serial.println("trying 'internet.o2active'");
-        modem.setNetworkAPN("internet.o2active");
-    }
-
-    //cakanie na siet
-    int16_t sq;
-    RegStatus status = REG_NO_RESULT;
-    while (status == REG_NO_RESULT || status == REG_SEARCHING || status ==
-REG_UNREGISTERED) { status = modem.getRegistrationStatus(); if(status ==
-REG_UNREGISTERED || status == REG_SEARCHING) { sq = modem.getSignalQuality();
-        delay(1000);
-      }
-      else if(status == REG_DENIED) {
-          Serial.println("\nNetwork registration denied!");
-          return;
-      }
-      else if(status == REG_OK_ROAMING) {
-          Serial.println("\nRegistered (roaming)");
-          break;
-      }
-      else break;
-    }
-
-    Serial.print("Signal quality: ");
-    Serial.println(modem.getSignalQuality());
-
-    // Activate network
-    if(!modem.setNetworkActive()) {
-        Serial.println(" Failed to activate network");
-    }
-
-
-    modem.sendAT("+CMQTTSTOP"); // Zrus existujuci session
-    modem.waitResponse(5000);
-
-    bool enableSSL = true;
-    bool enableSNI = true;
-    modem.mqtt_begin(enableSSL, enableSNI);
-
-    modem.mqtt_set_certificate(HivemqRootCA);
-
-    delay(1000);
-
-    // Connect using manual AT commands
-    if(!mqtt_connect_manual()) {
-        Serial.println("MQTT connection failed!");
-        return;
-    }
-
-    modem.mqtt_set_callback(mqtt_callback);
-
-    modem.mqtt_subscribe(mqtt_client_id, temperature_topic);
-}
-
-void loop() {
-    if (millis() > check_connect_millis) {
-        check_connect_millis = millis() + 10000UL;
-
-        modem.sendAT("+CMQTTDISC?"); // som pripojeny?
-        if(modem.waitResponse(2000) != 1) {
-            Serial.println("MQTT disconnected, reconnecting...");
-            mqtt_connect_manual();
-        }
-        else {
-            String message = "T-SIMCAM LTE uptime: " + String(millis() / 1000) +
-"s";
-
-            if(!modem.mqtt_publish(mqtt_client_id, motion_topic,
-message.c_str(), 1)) { Serial.println("Publish failed");
-            }
-        }
-    }
-
-    modem.mqtt_handle();
-    delay(100);
-}
-*/ //////////////////////////////////////////////////////////////////////////////////////////////
-
 /////////////////////////////////////////////// MAIN CODE ////////////////////////////////////////////////////
 #define TINY_GSM_MODEM_A7670
 #define TINY_GSM_RX_BUFFER 1024
@@ -243,6 +17,7 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 #include "WiFi.h"
 #include "camera.h"
 #include "connected_devices.h"
+#include "email_notification.h"
 #include "esp_task_wdt.h"
 #include "modem.h"
 #include "mqtt_server.h"
@@ -259,6 +34,8 @@ message.c_str(), 1)) { Serial.println("Publish failed");
 // TinyGsmHttpsComm<TinyGsmA7670, ASR_A7670X> https(modem);
 
 int lastMotionStatus = -1;
+String lastMotionTime = "";
+String lastSensorData = "";
 
 // BME680 musí byť za camera.h kvôli konfliktu sensor_t
 // senzor v namespace
@@ -282,6 +59,8 @@ extern bool rtcReady;
 extern bool bme680Ready;
 #define SEALEVELPRESSURE_HPA (1013.25)
 #define BME680_ADDR 0x77
+
+unsigned long lastSensorRead = -INT_MAX;
 
 RTC_DATA_ATTR uint32_t doubleResetCounter = 0;
 
@@ -435,9 +214,8 @@ void setup() {
 
 		if (mcpReady) {
 			setupSensors();
-		}
-
-		// webServer();
+			//setRTCTime();
+		} // webServer();
 		connectAbly(); //--------
 
 		// Serial.println(res ? "" : "fail");
@@ -481,6 +259,15 @@ void loop() {
 			if (pirState == HIGH) {
 				Serial.println("Pohyb detekovaný!");
 
+				if (rtcReady) {
+					DateTime now = rtc.now();
+					lastMotionTime = stringTime(now);
+					Serial.println("lastMotionTime nastavený na: " + lastMotionTime);
+					publishMQTT(lastMotionTopic, lastMotionTime);
+					Serial.println("lastMotionTime publikovaný");
+				} else {
+					Serial.println("RTC nie je pripravený!");
+				}
 
 				if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
 					sendEmailNotification("LittleGuard - Detekcia pohybu", "Pohyb bol detekovaný na vašom zariadení LittleGuard.");
@@ -495,22 +282,32 @@ void loop() {
 			publishMQTT(motionTopic, String(pirState));
 		}
 
-		if (bme680Ready) {
+		// Read sensor data based on interval setting (in minutes)
+		unsigned long sensorIntervalMs = currentSettings.sensorInterval * 60000UL;
+		if (bme680Ready && (millis() - lastSensorRead) >= sensorIntervalMs) {
 			unsigned long endTime = bme.beginReading();
 			if (endTime == 0) {
-				Serial.println(F("Failed to begin reading"));
 				return;
 			}
-			delay(1000);                                                   // počkaj na dokončenie čítania
-			float tlak = bme.pressure / 100.0;                             // hPa
-			float vlhkost = bme.humidity;                                  // %
-			float teplota = bme.temperature;                               // °C
-			float plyn = bme.gas_resistance / 1000.0;                      // KOhms
-			float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA); // m
+			delay(1000);
+			float tlak = bme.pressure / 100.0;
+			float vlhkost = bme.humidity;
+			float teplota = bme.temperature;
+			float plyn = bme.gas_resistance / 1000.0;
+			float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA);
 
-			publishMQTT(temperatureTopic, String(teplota));
+			String sensorData = "{";
+			sensorData += "\"temperature\":" + String(teplota) + ",";
+			sensorData += "\"pressure\":" + String(tlak) + ",";
+			sensorData += "\"humidity\":" + String(vlhkost) + ",";
+			sensorData += "\"gas\":" + String(plyn) + ",";
+			sensorData += "\"altitude\":" + String(nadmorskaVyska);
+			sensorData += "}";
+
+			lastSensorData = sensorData;
+			publishMQTT(temperatureTopic, sensorData);
+			lastSensorRead = millis();
 		}
-
 		if (stream && (millis() - lastFrame) >= 200) {
 			if (postFrame()) {
 				lastFrame = millis();

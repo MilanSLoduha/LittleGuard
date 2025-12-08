@@ -9,6 +9,7 @@
 
 void printTime(DateTime &now);
 String stringTime(DateTime &now);
+void setRTCTime();
 void setMotorAngle(int angle);
 void setupSensors();
 
