@@ -63,9 +63,82 @@ extern bool bme680Ready;
 unsigned long lastSensorRead = -INT_MAX;
 
 RTC_DATA_ATTR uint32_t doubleResetCounter = 0;
+const uint32_t DOUBLE_RESET_POWER_WINDOW_SECONDS = 5;
 
 void startCameraServer();
 void processPairingRequest();
+
+void disableWifiRadio() {
+	WiFi.disconnect(true, true);
+	WiFi.mode(WIFI_OFF);
+}
+
+bool ensureMotorReadyForIndicator() {
+	if (!mcpReady) {
+		Wire.begin(SDA_PIN, SCL_PIN);
+		if (!mcp.begin_I2C(0x20)) {
+			Serial.println("MCP23017 not found for reset indicator");
+			return false;
+		}
+		setupMotorPins();
+		mcpReady = true;
+	}
+	return true;
+}
+
+void indicateDoubleResetWindow() {
+	if (!isDoubleResetWindowActive()) {
+		return;
+	}
+	if (!ensureMotorReadyForIndicator()) {
+		return;
+	}
+
+	int baseX = currentXMotorAngle;
+	int startY = currentYMotorAngle;
+	int up = constrain(startY + 10, -90, 90);
+
+	const unsigned long safetyMs = DOUBLE_RESET_POWER_WINDOW_SECONDS * 1000UL + 1500; // cap in case timer fails
+	unsigned long startMs = millis();
+	while (isDoubleResetWindowActive() && (millis() - startMs) < safetyMs) {
+		setMotorAngle(baseX, up);
+		delay(150);
+		setMotorAngle(baseX, startY);
+		delay(150);
+	}
+}
+
+bool detectPowerCycleDoubleReset() {
+	Preferences drPrefs;
+	drPrefs.begin("dr", false);
+
+	uint32_t storedTs = drPrefs.getULong("ts", 0);
+	uint32_t nowTs = 0;
+	bool rtcOk = false;
+
+	Wire.begin(SDA_PIN, SCL_PIN);
+	if (rtc.begin(&Wire)) {
+		DateTime now = rtc.now();
+		nowTs = now.unixtime();
+		rtcOk = true;
+	}
+
+	bool detected = false;
+	if (rtcOk && storedTs > 0 && nowTs > storedTs && (nowTs - storedTs) <= DOUBLE_RESET_POWER_WINDOW_SECONDS) {
+		detected = true;
+	}
+
+	if (rtcOk) {
+		if (detected) {
+			drPrefs.putULong("ts", 0);
+		} else {
+			drPrefs.putULong("ts", nowTs);
+		}
+	}
+
+	drPrefs.end();
+	return detected;
+}
 
 void factoryReset() {
 	Preferences resetPrefs;
@@ -135,10 +208,11 @@ void setup() {
 	Serial.begin(115200);
 	delay(100);
 
-	bool shouldFactoryReset = detectDoubleReset();
+	bool shouldFactoryReset = detectDoubleReset() || detectPowerCycleDoubleReset();
 	if (shouldFactoryReset) { // 3500delay
 		factoryReset();
 	}
+	indicateDoubleResetWindow();
 
 	sdInit();
 
@@ -161,8 +235,14 @@ void setup() {
 			PASSWORD = passLoaded;
 			Serial.printf("Loaded WiFi credentials. SSID=\"%s\"\n", SSID.c_str());
 			wifiConnected = wifiSetup();
+			if (wifiConnected) {
+				Serial.println("Connection mode: WiFi");
+			}
 		} else {
 			Serial.println("Without credentials");
+		}
+		if (!wifiConnected) {
+			disableWifiRadio(); // on LTE only, stop WiFi stack spam
 		}
 		setupModem();
 		initSIM();
@@ -182,6 +262,10 @@ void setup() {
 			modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
 			modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
 			modem.mqtt_subscribe(mqtt_client_id, settingsTopic.c_str());
+
+			if (mobileDataConnected) {
+				Serial.println("Connection mode: LTE");
+			}
 
 		} else {
 			espClient.setInsecure();
@@ -207,11 +291,12 @@ void setup() {
 		// I2C
 		Wire.begin(SDA_PIN, SCL_PIN);
 
-		if (!mcp.begin_I2C(0x20)) {
-			Serial.println("MCP23017 have not been found on 0x20!");
+		if (!mcpReady) {
+			mcpReady = mcp.begin_I2C(0x20);
+			if (!mcpReady) {
+				Serial.println("MCP23017 have not been found on 0x20!");
+			}
 		}
-		mcpReady = true;
-
 		if (mcpReady) {
 			setupSensors();
 			//setRTCTime();
@@ -227,6 +312,7 @@ void setup() {
 		initCameraSettings();
 		// bme680Ready = false; // sddddddddddddddddddddddddddddddd
 	} else {
+		disableWifiRadio(); // first-run path uses LTE/AP only
 		setupModem();
 		initSIM();
 
@@ -237,6 +323,9 @@ void setup() {
 			Serial.println("MQTT connection failed!");
 		} else {
 			modem.mqtt_set_callback(mqtt_callback);
+		}
+		if (mobileDataConnected) {
+			Serial.println("Connection mode: LTE");
 		}
 
 		webServer();

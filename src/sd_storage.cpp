@@ -64,7 +64,7 @@ bool loadWIFICredentials(String &ssid, String &password) {
 	prefs.begin("wifi", true);
 	ssid = prefs.getString("ssid", "");
 	password = prefs.getString("password", "");
-	bool hasCredentials = ssid.length() > 0 && password.length() > 0;
+	bool hasCredentials = ssid.length() > 0;
 	prefs.end();
 	return hasCredentials;
 }
@@ -141,16 +141,42 @@ bool saveCameraSetup(String &macAddress) {
 	return true;
 }
 
-RTC_DATA_ATTR uint64_t dr_last_boot_us = 0;
 RTC_DATA_ATTR bool dr_armed = false;
+static esp_timer_handle_t dr_clear_timer = nullptr;
+static constexpr uint64_t DOUBLE_RESET_WINDOW_US = 5000000ULL; // 5s
+
+void clearDoubleResetFlag(void *arg) {
+	dr_armed = false;
+}
+
+static void startDoubleResetTimer() { // chat helped here
+	if (!dr_clear_timer) {
+		esp_timer_create_args_t args = {
+			.callback = &clearDoubleResetFlag,
+			.arg = nullptr,
+			.dispatch_method = ESP_TIMER_TASK,
+			.name = "dr_clear"};
+		if (esp_timer_create(&args, &dr_clear_timer) != ESP_OK) {
+			return;
+		}
+	}
+	esp_timer_stop(dr_clear_timer);
+	esp_timer_start_once(dr_clear_timer, DOUBLE_RESET_WINDOW_US);
+}
+
 bool detectDoubleReset() {
-	uint64_t now = esp_timer_get_time();
-	bool withinWindow = dr_armed && (now - dr_last_boot_us) < 2500000ULL; // 2.5s
-	bool detected = withinWindow;
+	if (dr_armed) {
+		dr_armed = false;
+		return true;
+	}
 
 	dr_armed = true;
-	dr_last_boot_us = now;
-	return detected;
+	startDoubleResetTimer();
+	return false;
+}
+
+bool isDoubleResetWindowActive() {
+	return dr_armed;
 }
 
 bool saveCameraSettingsToPrefs(const String &json) {

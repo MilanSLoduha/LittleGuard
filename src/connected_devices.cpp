@@ -28,6 +28,20 @@ String stringTime(DateTime &now) {
 	return cas;
 }
 
+void setupMotorPins() {
+	// motor X
+	mcp.pinMode(OUTPUT1X, OUTPUT);
+	mcp.pinMode(OUTPUT2X, OUTPUT);
+	mcp.pinMode(OUTPUT3X, OUTPUT);
+	mcp.pinMode(OUTPUT4X, OUTPUT);
+
+	// motor Y
+	mcp.pinMode(OUTPUT1Y, OUTPUT);
+	mcp.pinMode(OUTPUT2Y, OUTPUT);
+	mcp.pinMode(OUTPUT3Y, OUTPUT);
+	mcp.pinMode(OUTPUT4Y, OUTPUT);
+}
+
 void setRTCTime() {
 	if (!rtcReady) {
 		return;
@@ -171,15 +185,5 @@ void setupSensors() {
 
 	mcp.pinMode(MCP_PIR_PIN, INPUT);
 
-	// motor X
-	mcp.pinMode(OUTPUT1X, OUTPUT);
-	mcp.pinMode(OUTPUT2X, OUTPUT);
-	mcp.pinMode(OUTPUT3X, OUTPUT);
-	mcp.pinMode(OUTPUT4X, OUTPUT);
-
-	// motor Y
-	mcp.pinMode(OUTPUT1Y, OUTPUT);
-	mcp.pinMode(OUTPUT2Y, OUTPUT);
-	mcp.pinMode(OUTPUT3Y, OUTPUT);
-	mcp.pinMode(OUTPUT4Y, OUTPUT);
+	setupMotorPins();
 }

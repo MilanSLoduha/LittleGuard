@@ -10,11 +10,11 @@
 void printTime(DateTime &now);
 String stringTime(DateTime &now);
 void setRTCTime();
-void setMotorAngle(int angle);
+void setMotorAngle(int angleX, int angleY);
+void setupMotorPins();
 void setupSensors();
 
 extern Adafruit_MCP23X17 mcp;
-extern int currentMotorAngle; // Aktuálna pozícia motora
 
 extern RTC_DS3231 rtc;
 extern bool rtcReady;
