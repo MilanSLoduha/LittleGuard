@@ -55,7 +55,7 @@ bool savePhotoNumber(int num) {
 
 uint16_t loadPhotoNumber() {
 	prefs.begin("camera", true);
-	int num = prefs.getInt("num", 10000);
+	int num = prefs.getInt("num", 1);
 	prefs.end();
 	return num;
 }

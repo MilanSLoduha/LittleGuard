@@ -547,7 +547,7 @@ bool postFrame() {
 		http.begin(ablyClient, url);
 		http.addHeader("Content-Type", "application/json");
 		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
-		http.setTimeout(15000);
+		http.setTimeout(8000);
 
 		int httpResponseCode = http.POST(payload);
 		if (httpResponseCode != 200 && httpResponseCode != 201) {
@@ -593,10 +593,10 @@ bool postFrame() {
 			return false;
 		}
 
-		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"15000\"");
+		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"8000\"");
 		modem.waitResponse();
 
-		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",10000");
+		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",8000");
 		if (modem.waitResponse("DOWNLOAD") != 1) {
 			Serial.println("HTTP data failed");
 			modem.sendAT("+HTTPTERM");
