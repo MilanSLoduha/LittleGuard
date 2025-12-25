@@ -1,11 +1,10 @@
 #pragma once
+#include "select_pins.h"
 #include <Adafruit_MCP23X17.h>
 #include <RTClib.h>
-#include "select_pins.h"
 #define sensor_t adafruit_sensor_t
 #include "Adafruit_BME680.h"
 #undef sensor_t
-
 
 void printTime(DateTime &now);
 String stringTime(DateTime &now);
@@ -13,6 +12,7 @@ void setRTCTime();
 void setMotorAngle(int angleX, int angleY);
 void setupMotorPins();
 void setupSensors();
+bool isNotificationAllowed();
 
 extern Adafruit_MCP23X17 mcp;
 
@@ -23,4 +23,4 @@ extern Adafruit_BME680 bme;
 extern bool bme680Ready;
 
 extern int currentXMotorAngle; // <->
-extern int currentYMotorAngle; // ^ v 
+extern int currentYMotorAngle; // ^ v

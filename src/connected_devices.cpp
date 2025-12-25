@@ -1,4 +1,5 @@
 #include "connected_devices.h"
+#include "mqtt_server.h"
 
 Adafruit_MCP23X17 mcp;
 RTC_DS3231 rtc;
@@ -26,6 +27,80 @@ void printTime(DateTime &now) {
 String stringTime(DateTime &now) {
 	String cas = String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second()) + "   " + String(now.day()) + ". " + String(now.month()) + ". " + String(now.year());
 	return cas;
+}
+
+bool isNotificationAllowed() {
+	if (!rtcReady) {
+		return true; // Ak RTC nefunguje, povoliť upozornenia
+	}
+
+	DateTime now = rtc.now();
+	int dayOfWeek = now.dayOfTheWeek(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+
+	// Kontrola dňa
+	bool dayAllowed = false;
+	switch (dayOfWeek) {
+	case 0:
+		dayAllowed = currentSettings.sunday;
+		break;
+	case 1:
+		dayAllowed = currentSettings.monday;
+		break;
+	case 2:
+		dayAllowed = currentSettings.tuesday;
+		break;
+	case 3:
+		dayAllowed = currentSettings.wednesday;
+		break;
+	case 4:
+		dayAllowed = currentSettings.thursday;
+		break;
+	case 5:
+		dayAllowed = currentSettings.friday;
+		break;
+	case 6:
+		dayAllowed = currentSettings.saturday;
+		break;
+	}
+
+	// Ak žiadny deň nie je nastavený, povoliť všetky dni
+	bool anyDaySet =
+	    currentSettings.monday || currentSettings.tuesday || currentSettings.wednesday || currentSettings.thursday || currentSettings.friday || currentSettings.saturday || currentSettings.sunday;
+	if (!anyDaySet) {
+		dayAllowed = true;
+	}
+
+	if (!dayAllowed) {
+		return false;
+	}
+
+	// Kontrola času
+	int currentMinutes = now.hour() * 60 + now.minute();
+
+	// Parsovanie startTime a endTime (formát "HH:MM")
+	int startHour = 0, startMin = 0, endHour = 23, endMin = 59;
+
+	if (currentSettings.startTime.length() >= 5) {
+		startHour = currentSettings.startTime.substring(0, 2).toInt();
+		startMin = currentSettings.startTime.substring(3, 5).toInt();
+	}
+
+	if (currentSettings.endTime.length() >= 5) {
+		endHour = currentSettings.endTime.substring(0, 2).toInt();
+		endMin = currentSettings.endTime.substring(3, 5).toInt();
+	}
+
+	int startMinutes = startHour * 60 + startMin;
+	int endMinutes = endHour * 60 + endMin;
+
+	// Kontrola časového rozmedzí (aj cez polnoc)
+	if (startMinutes <= endMinutes) {
+		// Normálny prípad (napr. 09:00 - 17:00)
+		return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
+	} else {
+		// Cez polnoc (napr. 22:00 - 02:00)
+		return (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
+	}
 }
 
 void setupMotorPins() {
