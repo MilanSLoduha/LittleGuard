@@ -24,6 +24,7 @@
 #include "sd_storage.h"
 #include "secrets.h"
 #include "select_pins.h"
+#include "tasks.h"
 #include "topics.h"
 #include <HTTPClient.h>
 
@@ -37,7 +38,7 @@ int lastMotionStatus = -1;
 String lastMotionTime = "";
 String lastSensorData = "";
 unsigned long lastNotificationTime = 0;
-const unsigned long NOTIFICATION_THRESHOLD_MS = 5 * 60 * 1000; // 5 minút
+extern const unsigned long NOTIFICATION_THRESHOLD_MS = 5 * 60 * 1000; // 5 minút
 
 // BME680 musí byť za camera.h kvôli konfliktu sensor_t
 // senzor v namespace
@@ -120,6 +121,8 @@ void setup() {
 	Serial.begin(115200);
 	delay(100);
 
+	initSharedResources();
+
 	bool shouldFactoryReset = detectDoubleReset() || detectPowerCycleDoubleReset();
 	if (shouldFactoryReset) { // 3500delay
 		factoryReset();
@@ -136,11 +139,6 @@ void setup() {
 		String passLoaded;
 		bool credentials = loadWIFICredentials(ssidLoaded, passLoaded);
 
-		Serial.println("SSID: \"" + ssidLoaded + "\"");
-		Serial.println("PASSWORD: \"" + passLoaded + "\"");
-		if (!sdReady) {
-			Serial.println("SD Card initialization failed! (loading WiFi from NVS anyway)");
-		}
 		wifiConnected = false;
 		if (credentials) {
 			SSID = ssidLoaded;
@@ -191,7 +189,6 @@ void setup() {
 					Serial.print("MQTT WiFi connect failed, rc=");
 					Serial.println(client.state());
 				} else {
-					Serial.println("MQTT WiFi connected (initial)");
 					client.subscribe(commandTopic.c_str());
 					client.subscribe(streamTopic.c_str());
 					client.subscribe(snapshotTopic.c_str());
@@ -212,10 +209,8 @@ void setup() {
 		if (mcpReady) {
 			setupSensors();
 			// setRTCTime();
-		} // webServer();
-		connectAbly(); //--------
-
-		// Serial.println(res ? "" : "fail");
+		} 
+		connectAbly();
 
 		cameraReady = setupCamera();
 		if (!cameraReady) {
@@ -223,8 +218,28 @@ void setup() {
 		}
 		initCameraSettings();
 		// bme680Ready = false; // sddddddddddddddddddddddddddddddd
+
+		xTaskCreatePinnedToCore(networkTask,        
+		                        "NetworkTask",      
+		                        8192,               
+		                        NULL,               
+		                        2,                  
+		                        &networkTaskHandle, 
+		                        0                   
+		);
+
+		xTaskCreatePinnedToCore(sensorTask,        
+		                        "SensorTask",      
+		                        4096,              
+		                        NULL,              
+		                        1,                 
+		                        &sensorTaskHandle, 
+		                        1                  
+		);
+
+		Serial.println("Tasks created successfully");
 	} else {
-		disableWifiRadio(); // first-run path uses LTE/AP only
+		disableWifiRadio();
 		setupModem();
 		initSIM();
 
@@ -245,101 +260,10 @@ void setup() {
 }
 
 void loop() {
-	if (!firstRun) {
-		esp_task_wdt_reset();
-
-		if (wifiConnected) client.loop();
-		if (mobileDataConnected) modem.mqtt_handle();
-
-		DateTime now;
-		// printTime(now);
-
-		int pirState = mcp.digitalRead(MCP_PIR_PIN);
-
-		if (lastMotionStatus != pirState) {
-			if (pirState == HIGH) {
-				Serial.println("Pohyb detekovaný!");
-
-				if (rtcReady) {
-					DateTime now = rtc.now();
-					lastMotionTime = stringTime(now);
-					Serial.println("lastMotionTime nastavený na: " + lastMotionTime);
-					publishMQTT(lastMotionTopic, lastMotionTime);
-					Serial.println("lastMotionTime publikovaný");
-				} else {
-					Serial.println("RTC nie je pripravený!");
-				}
-
-				// Kontrola threshold a povolenia pre upozornenia
-				unsigned long currentTime = millis();
-				bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
-				bool notificationAllowed = isNotificationAllowed();
-
-				if (canSendNotification && notificationAllowed) {
-					if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
-						sendEmailNotification("LittleGuard - Detekcia pohybu", "Pohyb bol detekovaný na vašom zariadení LittleGuard.");
-					}
-					if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
-						bool res = modem.sendSMS(currentSettings.phoneNumber, String("LittleGuard: Pohyb detekovaný!"));
-					}
-					lastNotificationTime = currentTime;
-					Serial.println("Upozornenie odoslané");
-				} else {
-					if (!canSendNotification) {
-						Serial.println("Upozornenie preskočené - príliš skoro od posledného");
-					}
-					if (!notificationAllowed) {
-						Serial.println("Upozornenie preskočené - mimo povoleného času/dňa");
-					}
-				}
-			} else {
-				Serial.println("Žiadny pohyb.");
-			}
-			lastMotionStatus = pirState;
-			publishMQTT(motionTopic, String(pirState));
-		}
-
-		// Read sensor data based on interval setting (in minutes)
-		unsigned long sensorIntervalMs = currentSettings.sensorInterval * 60000UL;
-		if (bme680Ready && (millis() - lastSensorRead) >= sensorIntervalMs) {
-			unsigned long endTime = bme.beginReading();
-			if (endTime == 0) {
-				return;
-			}
-			delay(1000);
-			float tlak = bme.pressure / 100.0;
-			float vlhkost = bme.humidity;
-			float teplota = bme.temperature;
-			float plyn = bme.gas_resistance / 1000.0;
-			float nadmorskaVyska = bme.readAltitude(SEALEVELPRESSURE_HPA);
-
-			String sensorData = "{";
-			sensorData += "\"temperature\":" + String(teplota) + ",";
-			sensorData += "\"pressure\":" + String(tlak) + ",";
-			sensorData += "\"humidity\":" + String(vlhkost) + ",";
-			sensorData += "\"gas\":" + String(plyn) + ",";
-			sensorData += "\"altitude\":" + String(nadmorskaVyska);
-			sensorData += "}";
-
-			lastSensorData = sensorData;
-			publishMQTT(temperatureTopic, sensorData);
-			lastSensorRead = millis();
-		}
-		if (stream && (millis() - lastFrame) >= 200) {
-			if (postFrame()) {
-				lastFrame = millis();
-			} else {
-				Serial.println("Failed to send");
-				Serial.print(wifiConnected);
-				Serial.print(" ");
-				Serial.print(mobileDataConnected);
-				Serial.print(" \"");
-				Serial.print(SSID);
-				Serial.print("\" \"");
-				Serial.print(PASSWORD);
-				Serial.println("\"");
-			}
-		}
+	if (firstRun) {
+		vTaskDelay(pdMS_TO_TICKS(1000));
+	} else {
+		vTaskDelay(pdMS_TO_TICKS(1000));
 	}
 	Serial.clearWriteError();
 }

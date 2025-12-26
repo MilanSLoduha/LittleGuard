@@ -1,12 +1,15 @@
 #include "mqtt_server.h"
 #include "connected_devices.h"
 #include "modem.h"
+#include "tasks.h"
 #include "topics.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 
+extern QueueHandle_t snapshotRequestQueue;
+extern QueueHandle_t motorCommandQueue;
 extern bool publishMQTT(String topic, String message);
 extern bool wifiConnected;
 extern WiFiClientSecure espClient;
@@ -390,26 +393,37 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 
 			Serial.printf("Motor command: pan=%d, tilt=%d\n", x, y);
 
-			currentSettings.motorX = x;
-			currentSettings.motorY = y;
-			setMotorAngle(x, y);
-			persistCameraSettings(currentSettings);
+			// Queue motor command for Core 1 to execute
+			MotorCommand cmd;
+			cmd.angleX = x;
+			cmd.angleY = y;
+
+			if (motorCommandQueue != NULL) {
+				if (xQueueSend(motorCommandQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
+					Serial.println("Motor command queued for Core 1");
+					currentSettings.motorX = x;
+					currentSettings.motorY = y;
+					persistCameraSettings(currentSettings);
+				} else {
+					Serial.println("Failed to queue motor command");
+				}
+			}
 		} else if (strcmp(type, "get_settings") == 0) {
-		refreshSettingsFromSensor(currentSettings);
-		publishSettingsState();
+			refreshSettingsFromSensor(currentSettings);
+			publishSettingsState();
 
-		int pirState = mcp.digitalRead(MCP_PIR_PIN);
-		publishMQTT(motionTopic, String(pirState));
+			int pirState = mcp.digitalRead(MCP_PIR_PIN);
+			publishMQTT(motionTopic, String(pirState));
 
-		if (lastMotionTime.length() > 0) {
-			publishMQTT(lastMotionTopic, lastMotionTime);
-		}
+			if (lastMotionTime.length() > 0) {
+				publishMQTT(lastMotionTopic, lastMotionTime);
+			}
 
-		if (lastSensorData.length() > 0) {
-			publishMQTT(temperatureTopic, lastSensorData);
-		}
-	} else {
-		Serial.println("Unknown command type: " + String(type));
+			if (lastSensorData.length() > 0) {
+				publishMQTT(temperatureTopic, lastSensorData);
+			}
+		} else {
+			Serial.println("Unknown command type: " + String(type));
 		}
 	} else if (strcmp(topic, streamTopic.c_str()) == 0) {
 		String ctrl = payloadStr;
@@ -419,27 +433,15 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 			stream = (ctrl == "1" || ctrl == "on" || ctrl == "true");
 		}
 	} else if (strcmp(topic, snapshotTopic.c_str()) == 0) {
-
-		if (!cameraReady) {
-			if (!setupCamera()) {
-				return;
+		// Send snapshot request to Core 1 via queue
+		uint8_t cmd = 1;
+		if (snapshotRequestQueue != NULL) {
+			if (xQueueSend(snapshotRequestQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
+				Serial.println("Snapshot request queued for Core 1");
+			} else {
+				Serial.println("Failed to queue snapshot request");
 			}
 		}
-		if (!sdReady) {
-			sdInit();
-			if (!sdReady) {
-				return;
-			}
-		}
-
-		camera_fb_t *fb = captureFrame();
-		if (!fb) {
-			return;
-		}
-		sdWritePhoto(("/photo" + String(photoNumber) + ".jpg").c_str(), fb);
-		esp_camera_fb_return(fb);
-		photoNumber++;
-		savePhotoNumber(photoNumber);
 	}
 }
 
@@ -520,10 +522,10 @@ bool postFrame() {
 		return false;
 	}
 
-	Serial.printf("Frame: %d bytes, %dx%d\n", fb->len, fb->width, fb->height);
+	//Serial.printf("Frame: %d bytes, %dx%d\n", fb->len, fb->width, fb->height);
 
 	String encoded = base64::encode(fb->buf, fb->len);
-	Serial.printf("Base64: %d bytes\n", encoded.length());
+	//Serial.printf("Base64: %d bytes\n", encoded.length());
 
 	String payload = "{";
 	payload += "\"name\":\"frame\",";
@@ -534,7 +536,7 @@ bool postFrame() {
 	payload += "\"height\":" + String(fb->height);
 	payload += "}}";
 
-	Serial.printf("Payload: %d bytes\n", payload.length());
+	//Serial.printf("Payload: %d bytes\n", payload.length());
 
 	esp_camera_fb_return(fb);
 

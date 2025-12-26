@@ -1,5 +1,7 @@
 #include "connected_devices.h"
+#include "esp_task_wdt.h"
 #include "mqtt_server.h"
+#include "tasks.h"
 
 Adafruit_MCP23X17 mcp;
 RTC_DS3231 rtc;
@@ -8,6 +10,43 @@ Adafruit_BME680 bme;
 bool bme680Ready = false;
 int currentXMotorAngle = 0; // <->
 int currentYMotorAngle = 0; // ^ v
+
+SemaphoreHandle_t i2cMutex = NULL;
+SemaphoreHandle_t sdMutex = NULL;
+SemaphoreHandle_t cameraMutex = NULL;
+
+QueueHandle_t snapshotRequestQueue = NULL;
+QueueHandle_t notificationQueue = NULL;
+QueueHandle_t motorCommandQueue = NULL;
+
+TaskHandle_t networkTaskHandle = NULL;
+TaskHandle_t sensorTaskHandle = NULL;
+
+void initSharedResources() {
+	if (i2cMutex == NULL) {
+		i2cMutex = xSemaphoreCreateMutex();
+	}
+
+	if (sdMutex == NULL) {
+		sdMutex = xSemaphoreCreateMutex();
+	}
+
+	if (cameraMutex == NULL) {
+		cameraMutex = xSemaphoreCreateMutex();
+	}
+
+	if (snapshotRequestQueue == NULL) {
+		snapshotRequestQueue = xQueueCreate(5, sizeof(uint8_t));
+	}
+
+	if (notificationQueue == NULL) {
+		notificationQueue = xQueueCreate(10, sizeof(char) * 256);
+	}
+
+	if (motorCommandQueue == NULL) {
+		motorCommandQueue = xQueueCreate(5, sizeof(MotorCommand));
+	}
+}
 
 void printTime(DateTime &now) {
 	Serial.print("\r");
@@ -31,13 +70,12 @@ String stringTime(DateTime &now) {
 
 bool isNotificationAllowed() {
 	if (!rtcReady) {
-		return true; // Ak RTC nefunguje, povoliť upozornenia
+		return true;
 	}
 
 	DateTime now = rtc.now();
-	int dayOfWeek = now.dayOfTheWeek(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+	int dayOfWeek = now.dayOfTheWeek();
 
-	// Kontrola dňa
 	bool dayAllowed = false;
 	switch (dayOfWeek) {
 	case 0:
@@ -62,8 +100,6 @@ bool isNotificationAllowed() {
 		dayAllowed = currentSettings.saturday;
 		break;
 	}
-
-	// Ak žiadny deň nie je nastavený, povoliť všetky dni
 	bool anyDaySet =
 	    currentSettings.monday || currentSettings.tuesday || currentSettings.wednesday || currentSettings.thursday || currentSettings.friday || currentSettings.saturday || currentSettings.sunday;
 	if (!anyDaySet) {
@@ -74,10 +110,8 @@ bool isNotificationAllowed() {
 		return false;
 	}
 
-	// Kontrola času
 	int currentMinutes = now.hour() * 60 + now.minute();
 
-	// Parsovanie startTime a endTime (formát "HH:MM")
 	int startHour = 0, startMin = 0, endHour = 23, endMin = 59;
 
 	if (currentSettings.startTime.length() >= 5) {
@@ -93,12 +127,9 @@ bool isNotificationAllowed() {
 	int startMinutes = startHour * 60 + startMin;
 	int endMinutes = endHour * 60 + endMin;
 
-	// Kontrola časového rozmedzí (aj cez polnoc)
 	if (startMinutes <= endMinutes) {
-		// Normálny prípad (napr. 09:00 - 17:00)
 		return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
 	} else {
-		// Cez polnoc (napr. 22:00 - 02:00)
 		return (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
 	}
 }
@@ -126,54 +157,60 @@ void setRTCTime() {
 }
 
 void setMotorAngle(int angleX, int angleY) {
+	if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+		return;
+	}
+
 	int steps = (abs(currentXMotorAngle - angleX) * 512) / 360;
 	// 512 == 360 degrees
 
 	if (currentXMotorAngle > angleX) {
 		for (int j = 0; j < steps; j++) {
+			if (j % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1X, HIGH);
 			mcp.digitalWrite(OUTPUT2X, LOW);
 			mcp.digitalWrite(OUTPUT3X, LOW);
 			mcp.digitalWrite(OUTPUT4X, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1X, LOW);
 			mcp.digitalWrite(OUTPUT2X, LOW);
 			mcp.digitalWrite(OUTPUT3X, HIGH);
 			mcp.digitalWrite(OUTPUT4X, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1X, LOW);
 			mcp.digitalWrite(OUTPUT2X, HIGH);
 			mcp.digitalWrite(OUTPUT3X, HIGH);
 			mcp.digitalWrite(OUTPUT4X, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1X, HIGH);
 			mcp.digitalWrite(OUTPUT2X, HIGH);
 			mcp.digitalWrite(OUTPUT3X, LOW);
 			mcp.digitalWrite(OUTPUT4X, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 		}
 	} else {
 		for (int i = 0; i < steps; i++) {
+			if (i % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1X, HIGH);
 			mcp.digitalWrite(OUTPUT2X, HIGH);
 			mcp.digitalWrite(OUTPUT3X, LOW);
 			mcp.digitalWrite(OUTPUT4X, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1X, LOW);
 			mcp.digitalWrite(OUTPUT2X, HIGH);
 			mcp.digitalWrite(OUTPUT3X, HIGH);
 			mcp.digitalWrite(OUTPUT4X, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1X, LOW);
 			mcp.digitalWrite(OUTPUT2X, LOW);
 			mcp.digitalWrite(OUTPUT3X, HIGH);
 			mcp.digitalWrite(OUTPUT4X, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1X, HIGH);
 			mcp.digitalWrite(OUTPUT2X, LOW);
 			mcp.digitalWrite(OUTPUT3X, LOW);
 			mcp.digitalWrite(OUTPUT4X, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 		}
 	}
 	currentXMotorAngle = angleX;
@@ -183,52 +220,56 @@ void setMotorAngle(int angleX, int angleY) {
 	// 512 == 360 degrees
 	if (currentYMotorAngle > angleY) {
 		for (int j = 0; j < steps; j++) {
+			if (j % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1Y, HIGH);
 			mcp.digitalWrite(OUTPUT2Y, LOW);
 			mcp.digitalWrite(OUTPUT3Y, LOW);
 			mcp.digitalWrite(OUTPUT4Y, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1Y, LOW);
 			mcp.digitalWrite(OUTPUT2Y, LOW);
 			mcp.digitalWrite(OUTPUT3Y, HIGH);
 			mcp.digitalWrite(OUTPUT4Y, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1Y, LOW);
 			mcp.digitalWrite(OUTPUT2Y, HIGH);
 			mcp.digitalWrite(OUTPUT3Y, HIGH);
 			mcp.digitalWrite(OUTPUT4Y, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1Y, HIGH);
 			mcp.digitalWrite(OUTPUT2Y, HIGH);
 			mcp.digitalWrite(OUTPUT3Y, LOW);
 			mcp.digitalWrite(OUTPUT4Y, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 		}
 	} else {
 		for (int i = 0; i < steps; i++) {
+			if (i % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1Y, HIGH);
 			mcp.digitalWrite(OUTPUT2Y, HIGH);
 			mcp.digitalWrite(OUTPUT3Y, LOW);
 			mcp.digitalWrite(OUTPUT4Y, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1Y, LOW);
 			mcp.digitalWrite(OUTPUT2Y, HIGH);
 			mcp.digitalWrite(OUTPUT3Y, HIGH);
 			mcp.digitalWrite(OUTPUT4Y, LOW);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1Y, LOW);
 			mcp.digitalWrite(OUTPUT2Y, LOW);
 			mcp.digitalWrite(OUTPUT3Y, HIGH);
 			mcp.digitalWrite(OUTPUT4Y, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 			mcp.digitalWrite(OUTPUT1Y, HIGH);
 			mcp.digitalWrite(OUTPUT2Y, LOW);
 			mcp.digitalWrite(OUTPUT3Y, LOW);
 			mcp.digitalWrite(OUTPUT4Y, HIGH);
-			delay(DELAY);
+			vTaskDelay(pdMS_TO_TICKS(DELAY));
 		}
 	}
 	currentYMotorAngle = angleY;
+
+	xSemaphoreGive(i2cMutex);
 }
 
 void setupSensors() {

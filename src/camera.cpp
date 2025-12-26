@@ -33,18 +33,18 @@ bool setupCamera() {
 	config.fb_location = CAMERA_FB_IN_PSRAM;
 	config.grab_mode = CAMERA_GRAB_LATEST;
 
-	Serial.println("Camera pin configuration:");
-	Serial.printf("PWDN=%d RESET=%d XCLK=%d SIOD=%d SIOC=%d\n", PWDN_GPIO_NUM, RESET_GPIO_NUM, XCLK_GPIO_NUM, SIOD_GPIO_NUM, SIOC_GPIO_NUM);
+	//Serial.println("Camera pin configuration:");
+	//Serial.printf("PWDN=%d RESET=%d XCLK=%d SIOD=%d SIOC=%d\n", PWDN_GPIO_NUM, RESET_GPIO_NUM, XCLK_GPIO_NUM, SIOD_GPIO_NUM, SIOC_GPIO_NUM);
 
 #ifdef PWR_ON_PIN
-	Serial.printf("PWR_ON_PIN is defined: %d - ensuring power is stable\n", PWR_ON_PIN);
+	//Serial.printf("PWR_ON_PIN is defined: %d - ensuring power is stable\n", PWR_ON_PIN);
 	pinMode(PWR_ON_PIN, OUTPUT);
 	digitalWrite(PWR_ON_PIN, HIGH);
 	delay(200);
 #endif
 
 #if defined(RESET_GPIO_NUM) && (RESET_GPIO_NUM != -1)
-	Serial.printf("Pulsing RESET pin %d\n", RESET_GPIO_NUM);
+	//Serial.printf("Pulsing RESET pin %d\n", RESET_GPIO_NUM);
 	pinMode(RESET_GPIO_NUM, OUTPUT);
 	digitalWrite(RESET_GPIO_NUM, LOW);
 	delay(10);
