@@ -30,7 +30,7 @@
 
 #define SerialMon Serial
 
-// StreamDebugger debugger(SerialAT, Serial);
+// StreamDebugger debugger(SerialAT, Serial);//
 // TinyGsm modem(debugger);
 // TinyGsmHttpsComm<TinyGsmA7670, ASR_A7670X> https(modem);
 
