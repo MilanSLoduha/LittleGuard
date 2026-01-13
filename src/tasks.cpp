@@ -56,6 +56,8 @@ void networkTask(void *parameter) {
 
 	unsigned long lastMqttCheck = 0;
 	const unsigned long MQTT_CHECK_INTERVAL = 100;
+	unsigned long lastMqttPublish = 0;
+	const unsigned long MQTT_PUBLISH_INTERVAL = 5000;  // Publish sensor/motion data every 5 seconds
 
 	for (;;) {
 		esp_task_wdt_reset();
@@ -68,6 +70,20 @@ void networkTask(void *parameter) {
 				modem.mqtt_handle();
 			}
 			lastMqttCheck = millis();
+		}
+
+		// Periodically publish sensor data and motion info
+		if (millis() - lastMqttPublish >= MQTT_PUBLISH_INTERVAL) {
+			if (!lastMotionTime.isEmpty()) {
+				publishMQTT(lastMotionTopic, lastMotionTime);
+			}
+			if (!lastSensorData.isEmpty()) {
+				publishMQTT(temperatureTopic, lastSensorData);
+			}
+			if (lastMotionStatus >= 0) {
+				publishMQTT(motionTopic, String(lastMotionStatus));
+			}
+			lastMqttPublish = millis();
 		}
 
 		if (stream && (millis() - lastFrame) >= 100) {
@@ -84,6 +100,8 @@ void networkTask(void *parameter) {
 		NotificationMessage notif;
 		if (xQueueReceive(notificationQueue, &notif, 0) == pdTRUE) {
 
+			esp_task_wdt_delete(NULL);
+
 			if (notif.sendEmail && strlen(notif.emailSubject) > 0) {
 				sendEmailNotification(String(notif.emailSubject), String(notif.emailBody));
 			}
@@ -91,6 +109,8 @@ void networkTask(void *parameter) {
 			if (notif.sendSMS && strlen(notif.smsText) > 0) {
 				modem.sendSMS(currentSettings.phoneNumber, String(notif.smsText));
 			}
+
+			esp_task_wdt_add(NULL);
 		}
 
 		vTaskDelay(pdMS_TO_TICKS(10));
@@ -161,41 +181,55 @@ void sensorTask(void *parameter) {
 							// mode3 (or other): do nothing on motion
 						}
 
+						// Declare notification variables outside rtcReady block
+						uint32_t currentTime = millis();
+						bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
+
 						if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
 							DateTime now = rtc.now();
 							lastMotionTime = stringTime(now);
 							xSemaphoreGive(i2cMutex);
-							publishMQTT(lastMotionTopic, lastMotionTime);
+						}
+						// Don't call publishMQTT here - it blocks and starves NetworkTask
+						// Let NetworkTask publish via lastMotionTopic when it runs
+
+						// Use windowOk from earlier check - no need to call isNotificationAllowed() again
+						if (canSendNotification && windowOk) {
+						Serial.println("Sending notification (time window OK, threshold passed)");
+						NotificationMessage notif;
+						memset(&notif, 0, sizeof(NotificationMessage));
+
+						if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
+							strncpy(notif.emailSubject, "LittleGuard - Detekcia pohybu", 63);
+							strncpy(notif.emailBody, "Pohyb bol detekovaný na vašom zariadení LittleGuard.", 127);
+							notif.sendEmail = true;
 						}
 
-						unsigned long currentTime = millis();
-						bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
-						bool notificationAllowed = isNotificationAllowed();
-
-						if (canSendNotification && notificationAllowed) {
-							NotificationMessage notif;
-							memset(&notif, 0, sizeof(NotificationMessage));
-
-							if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
-								strncpy(notif.emailSubject, "LittleGuard - Detekcia pohybu", 63);
-								strncpy(notif.emailBody, "Pohyb bol detekovaný na vašom zariadení LittleGuard.", 127);
-								notif.sendEmail = true;
-							}
-
-							if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
-								strncpy(notif.smsText, "LittleGuard: Pohyb detekovaný!", 127);
-								notif.sendSMS = true;
-							}
-
-							if (xQueueSend(notificationQueue, &notif, 0) == pdTRUE) {
-								lastNotificationTime = currentTime;
-							}
+						if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
+							strncpy(notif.smsText, "LittleGuard: Pohyb detekovaný!", 127);
+							notif.sendSMS = true;
 						}
+
+						if (xQueueSend(notificationQueue, &notif, 0) == pdTRUE) {
+							lastNotificationTime = currentTime;
+							Serial.println("Notification queued successfully");
+						} else {
+							Serial.println("Failed to queue notification");
+						}
+					} else {
+						if (!canSendNotification) {
+							Serial.printf("Notification skipped: too soon (%.1f min since last)\n", 
+								(float)(currentTime - lastNotificationTime) / 60000.0f);
+						}
+						if (!windowOk) {
+							Serial.println("Notification skipped: outside time window");
+						}
+					}
 					} else {
 						Serial.println("Žiadny pohyb.");
 					}
 					lastMotionStatus = pirState;
-					publishMQTT(motionTopic, String(pirState));
+					// Don't call publishMQTT here - let NetworkTask handle it
 				}
 
 				lastPirCheck = millis();
@@ -224,7 +258,7 @@ void sensorTask(void *parameter) {
 					sensorData += "}";
 
 					lastSensorData = sensorData;
-					publishMQTT(temperatureTopic, sensorData);
+					// Don't call publishMQTT here - let NetworkTask handle it via lastSensorData global
 					lastSensorRead = millis();
 				}
 				xSemaphoreGive(i2cMutex);
