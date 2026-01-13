@@ -33,6 +33,7 @@ struct CameraSettings {
 	String startTime;
 	String endTime;
 	int sensorInterval;
+	bool powerSave;
 };
 
 extern CameraSettings currentSettings;

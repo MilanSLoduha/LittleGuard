@@ -22,3 +22,6 @@ bool saveCameraSettingsToPrefs(const String &json);
 bool loadCameraSettingsFromPrefs(String &json);
 bool saveCameraSettingsToSD(const String &json);
 bool loadCameraSettingsFromSD(String &json);
+bool recordMotionClip(uint32_t durationMs, String &savedFilePath);
+bool saveVideoNumber(int num);
+uint16_t loadVideoNumber();

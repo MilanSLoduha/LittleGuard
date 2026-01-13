@@ -7,6 +7,7 @@
 #include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
+#include <esp_task_wdt.h>
 
 extern QueueHandle_t snapshotRequestQueue;
 extern QueueHandle_t motorCommandQueue;
@@ -57,6 +58,7 @@ static CameraSettings makeDefaultSettings() {
 	cfg.startTime = "00:00";
 	cfg.endTime = "23:59";
 	cfg.sensorInterval = 5;
+	cfg.powerSave = false;
 	return cfg;
 }
 
@@ -178,6 +180,7 @@ static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &se
 	setIfPresent(root, "startTime", [&](JsonVariantConst v) { settings.startTime = v.as<String>(); }, updated);
 	setIfPresent(root, "endTime", [&](JsonVariantConst v) { settings.endTime = v.as<String>(); }, updated);
 	setIfPresent(root, "sensorInterval", [&](JsonVariantConst v) { settings.sensorInterval = v.as<int>(); }, updated);
+	setIfPresent(root, "powerSave", [&](JsonVariantConst v) { settings.powerSave = v.as<bool>(); }, updated);
 
 	return updated;
 }
@@ -212,6 +215,7 @@ static String serializeSettings(const CameraSettings &settings) {
 	doc["startTime"] = settings.startTime;
 	doc["endTime"] = settings.endTime;
 	doc["sensorInterval"] = settings.sensorInterval;
+	doc["powerSave"] = settings.powerSave;
 
 	String json;
 	serializeJson(doc, json);
@@ -517,6 +521,8 @@ bool publishMQTT(String topic, String message) {
 bool postFrame() {
 	if (!cameraReady || (!wifiConnected && !mobileDataConnected)) return false;
 
+	esp_task_wdt_reset();
+
 	camera_fb_t *fb = captureFrame();
 	if (!fb) {
 		return false;
@@ -525,6 +531,7 @@ bool postFrame() {
 	//Serial.printf("Frame: %d bytes, %dx%d\n", fb->len, fb->width, fb->height);
 
 	String encoded = base64::encode(fb->buf, fb->len);
+	esp_task_wdt_reset(); // Reset watchdog during base64 encoding
 	//Serial.printf("Base64: %d bytes\n", encoded.length());
 
 	String payload = "{";
@@ -539,6 +546,7 @@ bool postFrame() {
 	//Serial.printf("Payload: %d bytes\n", payload.length());
 
 	esp_camera_fb_return(fb);
+	esp_task_wdt_reset(); // Reset watchdog before HTTP
 
 	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName + "/messages";
 
@@ -551,7 +559,9 @@ bool postFrame() {
 		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
 		http.setTimeout(8000);
 
+		esp_task_wdt_reset();
 		int httpResponseCode = http.POST(payload);
+		esp_task_wdt_reset();
 		if (httpResponseCode != 200 && httpResponseCode != 201) {
 			Serial.print("Ably POST failed, HTTP response code: ");
 			Serial.println(httpResponseCode);
@@ -615,12 +625,14 @@ bool postFrame() {
 		}
 
 		modem.sendAT("+HTTPACTION=1");
+		esp_task_wdt_reset();
 		if (modem.waitResponse(30000, "+HTTPACTION:") != 1) {
 			Serial.println("HTTP action failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
 			return false;
 		}
+		esp_task_wdt_reset();
 
 		String response = modem.stream.readStringUntil('\n');
 		int c1 = response.indexOf(',');

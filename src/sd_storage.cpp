@@ -1,6 +1,7 @@
 // sd_storage.cpp
 #include "sd_storage.h"
 #include "SD.h"
+#include "connected_devices.h"
 #include "select_pins.h"
 #include <Arduino.h>
 #include <ESP.h>
@@ -9,6 +10,7 @@
 
 bool sdReady = false;
 Preferences prefs;
+static uint16_t videoNumber = 1;
 
 void sdInit() {
 	SPI.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
@@ -26,6 +28,7 @@ void sdInit() {
 
 	sdReady = true;
 	photoNumber = loadPhotoNumber();
+	videoNumber = loadVideoNumber();
 }
 
 bool sdWritePhoto(const char *path, camera_fb_t *fb) {
@@ -55,6 +58,21 @@ bool savePhotoNumber(int num) {
 
 uint16_t loadPhotoNumber() {
 	prefs.begin("camera", true);
+	int num = prefs.getInt("num", 1);
+	prefs.end();
+	if (num < 1) num = 1;
+	return num;
+}
+
+bool saveVideoNumber(int num) {
+	prefs.begin("video", false);
+	prefs.putInt("num", num);
+	prefs.end();
+	return true;
+}
+
+uint16_t loadVideoNumber() {
+	prefs.begin("video", true);
 	int num = prefs.getInt("num", 1);
 	prefs.end();
 	return num;
@@ -232,4 +250,84 @@ bool loadCameraSettingsFromSD(String &json) {
 	json = file.readString();
 	file.close();
 	return json.length() > 0;
+}
+
+static String nextRecordingFolder() {
+	if (!SD.exists("/records")) {
+		SD.mkdir("/records");
+	}
+
+	String folder = "/records/clip" + String(videoNumber);
+	int attempts = 0;
+	while (SD.exists(folder) && attempts < 1000) {
+		videoNumber++;
+		folder = "/records/clip" + String(videoNumber);
+		attempts++;
+	}
+
+	if (!SD.mkdir(folder)) {
+		return String("");
+	}
+	videoNumber++;
+	saveVideoNumber(videoNumber);
+	return folder;
+}
+
+bool recordMotionClip(uint32_t durationMs, String &savedFilePath) {
+	if (!sdReady) {
+		sdInit();
+		if (!sdReady) {
+			return false;
+		}
+	}
+
+	String folder = nextRecordingFolder();
+	if (folder.length() == 0) {
+		Serial.println("Failed to create recording folder");
+		return false;
+	}
+
+	String filePath = folder + "/video.mjpeg";
+	File file;
+	if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+		file = SD.open(filePath.c_str(), FILE_WRITE);
+		xSemaphoreGive(sdMutex);
+	}
+
+	if (!file) {
+		Serial.println("Failed to open MJPEG file for writing");
+		return false;
+	}
+
+	uint32_t stopAt = millis() + durationMs;
+	const uint32_t frameDelayMs = 80; // ~12 fps
+
+	while (millis() < stopAt) {
+		camera_fb_t *fb = nullptr;
+		if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+			fb = captureFrame();
+			xSemaphoreGive(cameraMutex);
+		}
+
+		if (fb) {
+			if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+				file.print("--frame\r\nContent-Type: image/jpeg\r\n\r\n");
+				file.write(fb->buf, fb->len);
+				file.print("\r\n");
+				xSemaphoreGive(sdMutex);
+			}
+			esp_camera_fb_return(fb);
+		}
+
+		vTaskDelay(pdMS_TO_TICKS(frameDelayMs));
+	}
+
+	if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+		file.close();
+		xSemaphoreGive(sdMutex);
+	}
+
+	savedFilePath = filePath;
+	Serial.printf("Motion clip saved: %s\n", savedFilePath.c_str());
+	return true;
 }

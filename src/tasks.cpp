@@ -35,6 +35,22 @@ extern String temperatureTopic;
 
 #define SEALEVELPRESSURE_HPA (1013.25)
 
+static bool recordingInProgress = false;
+
+static void motionRecordingTask(void *param) {
+	uint32_t durationMs = *((uint32_t *)param);
+	delete (uint32_t *)param;
+
+	String savedPath;
+	if (!recordMotionClip(durationMs, savedPath)) {
+		Serial.println("Motion recording failed");
+	} else {
+		Serial.println("Motion recording finished");
+	}
+	recordingInProgress = false;
+	vTaskDelete(NULL);
+}
+
 void networkTask(void *parameter) {
 	esp_task_wdt_add(NULL);
 
@@ -97,6 +113,53 @@ void sensorTask(void *parameter) {
 
 				if (lastMotionStatus != pirState) {
 					if (pirState == HIGH) {
+						if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+							DateTime now = rtc.now();
+							Serial.printf("Motion HIGH at %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
+							xSemaphoreGive(i2cMutex);
+						} else {
+							Serial.println("Motion HIGH (no RTC)");
+						}
+						bool windowOk = isNotificationAllowed();
+						if (!windowOk) {
+							lastMotionStatus = pirState;
+							lastPirCheck = millis();
+							continue; // outside allowed window, skip actions
+						}
+
+						if (currentSettings.mode == "mode1" && !recordingInProgress) {
+							recordingInProgress = true;
+							uint32_t *durationMs = new uint32_t(10000);
+							BaseType_t created = xTaskCreatePinnedToCore(
+							    motionRecordingTask,
+							    "motionRecording",
+							    8192,
+							    durationMs,
+							    1,
+							    NULL,
+							    1);
+							if (created != pdPASS) {
+								recordingInProgress = false;
+								delete durationMs;
+								Serial.println("Failed to start recording task");
+							}
+						} else if (currentSettings.mode == "mode2") {
+							if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+								camera_fb_t *fb = captureFrame();
+								if (fb != NULL) {
+									if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+										sdWritePhoto(("/photo" + String(photoNumber) + ".jpg").c_str(), fb);
+										photoNumber++;
+										savePhotoNumber(photoNumber);
+										xSemaphoreGive(sdMutex);
+									}
+									esp_camera_fb_return(fb);
+								}
+								xSemaphoreGive(cameraMutex);
+							}
+						} else {
+							// mode3 (or other): do nothing on motion
+						}
 
 						if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
 							DateTime now = rtc.now();

@@ -40,7 +40,7 @@ void initSharedResources() {
 	}
 
 	if (notificationQueue == NULL) {
-		notificationQueue = xQueueCreate(10, sizeof(char) * 256);
+		notificationQueue = xQueueCreate(10, sizeof(NotificationMessage));
 	}
 
 	if (motorCommandQueue == NULL) {
