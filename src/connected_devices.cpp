@@ -73,7 +73,15 @@ bool isNotificationAllowed() {
 		return true;
 	}
 
+	// Acquire I2C mutex to safely read RTC
+	if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+		// Mutex timeout - allow notifications to avoid blocking motion detection
+		return true;
+	}
+
 	DateTime now = rtc.now();
+	xSemaphoreGive(i2cMutex);
+
 	int dayOfWeek = now.dayOfTheWeek();
 
 	bool dayAllowed = false;
@@ -107,6 +115,7 @@ bool isNotificationAllowed() {
 	}
 
 	if (!dayAllowed) {
+		Serial.printf("Day not allowed. Today is day %d\n", dayOfWeek);
 		return false;
 	}
 
@@ -127,11 +136,26 @@ bool isNotificationAllowed() {
 	int startMinutes = startHour * 60 + startMin;
 	int endMinutes = endHour * 60 + endMin;
 
+	bool timeAllowed;
 	if (startMinutes <= endMinutes) {
-		return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
+		timeAllowed = (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
 	} else {
-		return (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
+		timeAllowed = (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
 	}
+	
+	if (!timeAllowed) {
+		Serial.printf("Time not allowed. Current: %02d:%02d (%d min), Window: %02d:%02d - %02d:%02d\n", 
+			now.hour(), now.minute(), currentMinutes,
+			startHour, startMin, endHour, endMin);
+	}
+	
+	if (!timeAllowed) {
+		Serial.printf("Time not allowed. Current: %02d:%02d (%d min), Window: %02d:%02d - %02d:%02d\n", 
+			now.hour(), now.minute(), currentMinutes,
+			startHour, startMin, endHour, endMin);
+	}
+	
+	return timeAllowed;
 }
 
 void setupMotorPins() {

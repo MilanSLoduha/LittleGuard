@@ -230,7 +230,7 @@ void setup() {
 
 		xTaskCreatePinnedToCore(sensorTask,        
 		                        "SensorTask",      
-		                        4096,              
+		                        16384,             // Increased from 4096 to 16KB for SSL/MQTT operations
 		                        NULL,              
 		                        1,                 
 		                        &sensorTaskHandle, 

@@ -131,10 +131,17 @@ static bool applyCameraSettingsInternal(const CameraSettings &settings) {
 		return false;
 	}
 
+	// Validate quality based on resolution
+	int validQuality = settings.quality;
+	if (settings.resolution == "3" && validQuality < 15) {
+		validQuality = 15;  // Enforce minimum quality for XGA
+		Serial.println("Quality enforced to 15 for XGA resolution");
+	}
+
 	framesize_t frame = optionToFrameSize(settings.resolution);
 	bool ok = true;
 	ok &= sensor->set_framesize(sensor, frame) == 0;
-	ok &= sensor->set_quality(sensor, settings.quality) == 0;
+	ok &= sensor->set_quality(sensor, validQuality) == 0;
 	ok &= sensor->set_brightness(sensor, settings.brightness) == 0;
 	ok &= sensor->set_contrast(sensor, settings.contrast) == 0;
 	ok &= sensor->set_hmirror(sensor, settings.hFlip) == 0;
@@ -181,6 +188,13 @@ static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &se
 	setIfPresent(root, "endTime", [&](JsonVariantConst v) { settings.endTime = v.as<String>(); }, updated);
 	setIfPresent(root, "sensorInterval", [&](JsonVariantConst v) { settings.sensorInterval = v.as<int>(); }, updated);
 	setIfPresent(root, "powerSave", [&](JsonVariantConst v) { settings.powerSave = v.as<bool>(); }, updated);
+
+	// Enforce minimum quality based on resolution
+	// XGA (resolution "3") requires minimum quality of 15 to prevent oversized frames
+	if (settings.resolution == "3" && settings.quality < 15) {
+		settings.quality = 15;
+		updated = true;
+	}
 
 	return updated;
 }
@@ -534,14 +548,14 @@ bool postFrame() {
 	esp_task_wdt_reset(); // Reset watchdog during base64 encoding
 	//Serial.printf("Base64: %d bytes\n", encoded.length());
 
-	String payload = "{";
-	payload += "\"name\":\"frame\",";
-	payload += "\"data\":{";
-	payload += "\"image\":\"" + encoded + "\",";
-	payload += "\"timestamp\":" + String(millis()) + ",";
-	payload += "\"width\":" + String(fb->width) + ",";
-	payload += "\"height\":" + String(fb->height);
-	payload += "}}";
+	esp_task_wdt_reset(); // Reset before string building
+
+	// Build simple payload: Ably will handle the data field as string automatically
+	String payload = "{\"name\":\"frame\",\"data\":\"";
+	payload += encoded;  // Just the base64, no escaping needed for base64
+	payload += "\"}";
+
+	esp_task_wdt_reset(); // Reset after payload construction
 
 	//Serial.printf("Payload: %d bytes\n", payload.length());
 
