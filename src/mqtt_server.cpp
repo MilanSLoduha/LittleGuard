@@ -189,8 +189,6 @@ static bool applyJsonToSettings(const JsonVariantConst &root, CameraSettings &se
 	setIfPresent(root, "sensorInterval", [&](JsonVariantConst v) { settings.sensorInterval = v.as<int>(); }, updated);
 	setIfPresent(root, "powerSave", [&](JsonVariantConst v) { settings.powerSave = v.as<bool>(); }, updated);
 
-	// Enforce minimum quality based on resolution
-	// XGA (resolution "3") requires minimum quality of 15 to prevent oversized frames
 	if (settings.resolution == "3" && settings.quality < 15) {
 		settings.quality = 15;
 		updated = true;
@@ -405,13 +403,11 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 		} else if (strcmp(type, "motor") == 0) {
 			Serial.println("Raw motor command JSON: " + payloadStr);
 
-			// Frontend sends "pan" and "tilt", map them to x and y
 			int x = doc["pan"] | currentSettings.motorX;
 			int y = doc["tilt"] | currentSettings.motorY;
 
 			Serial.printf("Motor command: pan=%d, tilt=%d\n", x, y);
 
-			// Queue motor command for Core 1 to execute
 			MotorCommand cmd;
 			cmd.angleX = x;
 			cmd.angleY = y;
@@ -449,9 +445,9 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 		ctrl.toLowerCase();
 		if (ctrl.length() != 0) {
 			stream = (ctrl == "1" || ctrl == "on" || ctrl == "true");
+			Serial.printf("Stream command received: %s -> stream=%d\n", ctrl.c_str(), stream);
 		}
 	} else if (strcmp(topic, snapshotTopic.c_str()) == 0) {
-		// Send snapshot request to Core 1 via queue
 		uint8_t cmd = 1;
 		if (snapshotRequestQueue != NULL) {
 			if (xQueueSend(snapshotRequestQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -545,17 +541,15 @@ bool postFrame() {
 	//Serial.printf("Frame: %d bytes, %dx%d\n", fb->len, fb->width, fb->height);
 
 	String encoded = base64::encode(fb->buf, fb->len);
-	esp_task_wdt_reset(); // Reset watchdog during base64 encoding
-	//Serial.printf("Base64: %d bytes\n", encoded.length());
+
 
 	esp_task_wdt_reset(); // Reset before string building
 
-	// Build simple payload: Ably will handle the data field as string automatically
 	String payload = "{\"name\":\"frame\",\"data\":\"";
-	payload += encoded;  // Just the base64, no escaping needed for base64
+	payload += encoded;
 	payload += "\"}";
 
-	esp_task_wdt_reset(); // Reset after payload construction
+	esp_task_wdt_reset(); 
 
 	//Serial.printf("Payload: %d bytes\n", payload.length());
 
@@ -622,7 +616,7 @@ bool postFrame() {
 		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"8000\"");
 		modem.waitResponse();
 
-		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",8000");
+		modem.sendAT("+HTTPDATA=" + String(payload.length()) + ",10000");
 		if (modem.waitResponse("DOWNLOAD") != 1) {
 			Serial.println("HTTP data failed");
 			modem.sendAT("+HTTPTERM");
@@ -630,8 +624,19 @@ bool postFrame() {
 			return false;
 		}
 
-		modem.stream.write(payload.c_str(), payload.length());
-		if (modem.waitResponse() != 1) {
+		const size_t chunkSize = 1024;
+		size_t totalLength = payload.length();
+		size_t sent = 0;
+		
+		while (sent < totalLength) {
+			size_t toSend = min(chunkSize, totalLength - sent);
+			modem.stream.write((const uint8_t*)(payload.c_str() + sent), toSend);
+			sent += toSend;
+			delay(10);
+			esp_task_wdt_reset();
+		}
+		
+		if (modem.waitResponse(5000) != 1) {
 			Serial.println("HTTP data send failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
@@ -672,6 +677,20 @@ bool postFrame() {
 
 		modem.sendAT("+HTTPTERM");
 		modem.waitResponse();
+
+		// Ensure MQTT session is still alive after HTTP transfer
+		modem.sendAT("+CMQTTDISC?");
+		if (modem.waitResponse(2000) != 1) {
+			if (mqtt_connect_manualLTE()) {
+				modem.mqtt_set_callback(mqtt_callback);
+				modem.mqtt_subscribe(mqtt_client_id, temperatureTopic.c_str());
+				modem.mqtt_subscribe(mqtt_client_id, commandTopic.c_str());
+				modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
+				modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
+			} else {
+				Serial.println("MQTT reconnect failed after HTTP transfer");
+			}
+		}
 	}
 	return true;
 }

@@ -57,7 +57,7 @@ void networkTask(void *parameter) {
 	unsigned long lastMqttCheck = 0;
 	const unsigned long MQTT_CHECK_INTERVAL = 100;
 	unsigned long lastMqttPublish = 0;
-	const unsigned long MQTT_PUBLISH_INTERVAL = 5000;  // Publish sensor/motion data every 5 seconds
+	const unsigned long MQTT_PUBLISH_INTERVAL = 5 * 60 * 1000;
 
 	for (;;) {
 		esp_task_wdt_reset();
@@ -181,7 +181,6 @@ void sensorTask(void *parameter) {
 							// mode3 (or other): do nothing on motion
 						}
 
-						// Declare notification variables outside rtcReady block
 						uint32_t currentTime = millis();
 						bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
 
@@ -190,10 +189,7 @@ void sensorTask(void *parameter) {
 							lastMotionTime = stringTime(now);
 							xSemaphoreGive(i2cMutex);
 						}
-						// Don't call publishMQTT here - it blocks and starves NetworkTask
-						// Let NetworkTask publish via lastMotionTopic when it runs
 
-						// Use windowOk from earlier check - no need to call isNotificationAllowed() again
 						if (canSendNotification && windowOk) {
 						Serial.println("Sending notification (time window OK, threshold passed)");
 						NotificationMessage notif;
@@ -229,7 +225,6 @@ void sensorTask(void *parameter) {
 						Serial.println("Žiadny pohyb.");
 					}
 					lastMotionStatus = pirState;
-					// Don't call publishMQTT here - let NetworkTask handle it
 				}
 
 				lastPirCheck = millis();
@@ -258,7 +253,6 @@ void sensorTask(void *parameter) {
 					sensorData += "}";
 
 					lastSensorData = sensorData;
-					// Don't call publishMQTT here - let NetworkTask handle it via lastSensorData global
 					lastSensorRead = millis();
 				}
 				xSemaphoreGive(i2cMutex);
