@@ -5,6 +5,8 @@ void networkTask(void *parameter);
 
 void sensorTask(void *parameter);
 
+void streamTask(void *parameter);
+
 struct NotificationMessage {
 	char emailSubject[64];
 	char emailBody[128];

@@ -95,12 +95,14 @@ void networkTask(void *parameter) {
 				client.loop();
 			}
 			if (mobileDataConnected) {
-				modem.mqtt_handle();
+				if (xSemaphoreTake(modemMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+					modem.mqtt_handle();
+					xSemaphoreGive(modemMutex);
+				}
 			}
 			lastMqttCheck = millis();
 		}
 
-		// Periodically publish sensor data and motion info
 		if (millis() - lastMqttPublish >= MQTT_PUBLISH_INTERVAL) {
 			if (!lastMotionTime.isEmpty()) {
 				publishMQTT(lastMotionTopic, lastMotionTime);
@@ -112,17 +114,6 @@ void networkTask(void *parameter) {
 				publishMQTT(motionTopic, String(lastMotionStatus));
 			}
 			lastMqttPublish = millis();
-		}
-
-		if (stream && (millis() - lastFrame) >= 100) {
-			if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
-				if (postFrame()) {
-					lastFrame = millis();
-				} else {
-					Serial.println("Failed to send frame");
-				}
-				xSemaphoreGive(cameraMutex);
-			}
 		}
 
 		NotificationMessage notif;
@@ -144,6 +135,29 @@ void networkTask(void *parameter) {
 				Serial.println("Failed to create notification task");
 			} else {
 				Serial.println("Notification task spawned on Core 1");
+			}
+		}
+
+		vTaskDelay(pdMS_TO_TICKS(10));
+	}
+}
+
+void streamTask(void *parameter) {
+	esp_task_wdt_add(NULL);
+
+	const unsigned long STREAM_INTERVAL_MS = 100;
+
+	for (;;) {
+		esp_task_wdt_reset();
+
+		if (stream && (millis() - lastFrame) >= STREAM_INTERVAL_MS) {
+			if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
+				if (postFrame()) {
+					lastFrame = millis();
+				} else {
+					Serial.println("Failed to send frame");
+				}
+				xSemaphoreGive(cameraMutex);
 			}
 		}
 

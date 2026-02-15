@@ -13,6 +13,7 @@
 extern SemaphoreHandle_t i2cMutex;
 extern SemaphoreHandle_t sdMutex;
 extern SemaphoreHandle_t cameraMutex;
+extern SemaphoreHandle_t modemMutex;
 
 // Queues for inter-task communication
 extern QueueHandle_t snapshotRequestQueue;
@@ -22,6 +23,7 @@ extern QueueHandle_t motorCommandQueue;
 // Task handles
 extern TaskHandle_t networkTaskHandle;
 extern TaskHandle_t sensorTaskHandle;
+extern TaskHandle_t streamTaskHandle;
 
 void initSharedResources();
 
