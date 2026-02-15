@@ -51,6 +51,34 @@ static void motionRecordingTask(void *param) {
 	vTaskDelete(NULL);
 }
 
+// Notification sending task - runs on Core 1 to avoid blocking networkTask
+static void notificationSendTask(void *param) {
+	NotificationMessage *notif = (NotificationMessage *)param;
+	
+	Serial.println("Starting notification send task...");
+	
+	if (notif->sendEmail && strlen(notif->emailSubject) > 0) {
+		Serial.println("Sending email notification...");
+		if (sendEmailNotification(String(notif->emailSubject), String(notif->emailBody))) {
+			Serial.println("Email sent successfully");
+		} else {
+			Serial.println("Email sending failed");
+		}
+	}
+	
+	vTaskDelay(pdMS_TO_TICKS(100)); // Small delay between operations
+	
+	if (notif->sendSMS && strlen(notif->smsText) > 0) {
+		Serial.println("Sending SMS notification...");
+		modem.sendSMS(currentSettings.phoneNumber, String(notif->smsText));
+		Serial.println("SMS sent");
+	}
+	
+	delete notif;
+	Serial.println("Notification task completed");
+	vTaskDelete(NULL);
+}
+
 void networkTask(void *parameter) {
 	esp_task_wdt_add(NULL);
 
@@ -99,18 +127,24 @@ void networkTask(void *parameter) {
 
 		NotificationMessage notif;
 		if (xQueueReceive(notificationQueue, &notif, 0) == pdTRUE) {
-
-			esp_task_wdt_delete(NULL);
-
-			if (notif.sendEmail && strlen(notif.emailSubject) > 0) {
-				sendEmailNotification(String(notif.emailSubject), String(notif.emailBody));
+			NotificationMessage *notifCopy = new NotificationMessage(notif);
+			
+			BaseType_t created = xTaskCreatePinnedToCore(
+				notificationSendTask,
+				"NotifSend",
+				12288,
+				notifCopy,
+				1,
+				NULL,
+				1
+			);
+			
+			if (created != pdPASS) {
+				delete notifCopy;
+				Serial.println("Failed to create notification task");
+			} else {
+				Serial.println("Notification task spawned on Core 1");
 			}
-
-			if (notif.sendSMS && strlen(notif.smsText) > 0) {
-				modem.sendSMS(currentSettings.phoneNumber, String(notif.smsText));
-			}
-
-			esp_task_wdt_add(NULL);
 		}
 
 		vTaskDelay(pdMS_TO_TICKS(10));
