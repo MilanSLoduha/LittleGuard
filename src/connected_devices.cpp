@@ -14,6 +14,7 @@ int currentYMotorAngle = 0; // ^ v
 SemaphoreHandle_t i2cMutex = NULL;
 SemaphoreHandle_t sdMutex = NULL;
 SemaphoreHandle_t cameraMutex = NULL;
+SemaphoreHandle_t modemMutex = NULL;
 
 QueueHandle_t snapshotRequestQueue = NULL;
 QueueHandle_t notificationQueue = NULL;
@@ -21,6 +22,7 @@ QueueHandle_t motorCommandQueue = NULL;
 
 TaskHandle_t networkTaskHandle = NULL;
 TaskHandle_t sensorTaskHandle = NULL;
+TaskHandle_t streamTaskHandle = NULL;
 
 void initSharedResources() {
 	if (i2cMutex == NULL) {
@@ -33,6 +35,10 @@ void initSharedResources() {
 
 	if (cameraMutex == NULL) {
 		cameraMutex = xSemaphoreCreateMutex();
+	}
+
+	if (modemMutex == NULL) {
+		modemMutex = xSemaphoreCreateMutex();
 	}
 
 	if (snapshotRequestQueue == NULL) {

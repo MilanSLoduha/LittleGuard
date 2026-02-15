@@ -496,24 +496,34 @@ bool publishMQTT(String topic, String message) {
 
 	// LTE path first
 	if (mobileDataConnected) {
-		modem.sendAT("+CMQTTDISC?"); // som pripojeny?
-
-		if (modem.waitResponse(2000) != 1) {
-			if (mqtt_connect_manualLTE()) {
-				modem.mqtt_set_callback(mqtt_callback);
-				modem.mqtt_subscribe(mqtt_client_id, temperatureTopic.c_str());
-				modem.mqtt_subscribe(mqtt_client_id, commandTopic.c_str());
-				modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
-				modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
-			} else {
-				return false;
-			}
-		}
-
-		if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
+		if (xSemaphoreTake(modemMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
 			return false;
 		}
-		return true;
+
+		bool success = false;
+		do {
+			modem.sendAT("+CMQTTDISC?"); // som pripojeny?
+
+			if (modem.waitResponse(2000) != 1) {
+				if (mqtt_connect_manualLTE()) {
+					modem.mqtt_set_callback(mqtt_callback);
+					modem.mqtt_subscribe(mqtt_client_id, temperatureTopic.c_str());
+					modem.mqtt_subscribe(mqtt_client_id, commandTopic.c_str());
+					modem.mqtt_subscribe(mqtt_client_id, streamTopic.c_str());
+					modem.mqtt_subscribe(mqtt_client_id, snapshotTopic.c_str());
+				} else {
+					break;
+				}
+			}
+
+			if (!modem.mqtt_publish(mqtt_client_id, topic.c_str(), message.c_str())) { // publish
+				break;
+			}
+			success = true;
+		} while (false);
+
+		xSemaphoreGive(modemMutex);
+		return success;
 	}
 
 	// WiFi path
@@ -580,13 +590,20 @@ bool postFrame() {
 		}
 		http.end();
 	} else if (mobileDataConnected) {
+		if (xSemaphoreTake(modemMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+			Serial.println("Modem busy, skipping LTE frame send");
+			return false;
+		}
+
+		bool success = false;
+		do {
 		modem.sendAT("+HTTPTERM");
 		modem.waitResponse(3000);
 
 		modem.sendAT("+HTTPINIT");
 		if (modem.waitResponse(10000) != 1) {
 			Serial.println("HTTP init failed");
-			return false;
+			break;
 		}
 
 		modem.sendAT("+HTTPPARA=\"URL\",\"" + url + "\"");
@@ -594,7 +611,7 @@ bool postFrame() {
 			Serial.println("HTTP set URL failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 
 		modem.sendAT("+HTTPPARA=\"CONTENT\",\"application/json\"");
@@ -602,7 +619,7 @@ bool postFrame() {
 			Serial.println("HTTP set content type failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 
 		modem.sendAT("+HTTPPARA=\"USERDATA\",\"Authorization: Basic " + String(ABLY_AUTH_BASIC) + "\"");
@@ -610,7 +627,7 @@ bool postFrame() {
 			Serial.println("HTTP set authorization failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 
 		modem.sendAT("+HTTPPARA=\"TIMEOUT\",\"8000\"");
@@ -621,7 +638,7 @@ bool postFrame() {
 			Serial.println("HTTP data failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 
 		const size_t chunkSize = 1024;
@@ -640,7 +657,7 @@ bool postFrame() {
 			Serial.println("HTTP data send failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 
 		modem.sendAT("+HTTPACTION=1");
@@ -649,7 +666,7 @@ bool postFrame() {
 			Serial.println("HTTP action failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 		esp_task_wdt_reset();
 
@@ -672,7 +689,7 @@ bool postFrame() {
 			}
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
-			return false;
+			break;
 		}
 
 		modem.sendAT("+HTTPTERM");
@@ -691,6 +708,12 @@ bool postFrame() {
 				Serial.println("MQTT reconnect failed after HTTP transfer");
 			}
 		}
+
+		success = true;
+	} while (false);
+
+		xSemaphoreGive(modemMutex);
+		return success;
 	}
 	return true;
 }
