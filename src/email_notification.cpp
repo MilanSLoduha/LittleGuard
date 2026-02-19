@@ -3,6 +3,7 @@
 #include <ESP_Mail_Client.h>
 
 extern bool wifiConnected;
+extern bool mobileDataConnected;
 extern CameraSettings currentSettings;
 
 bool sendEmailNotification(String subject, String body) {
@@ -10,7 +11,8 @@ bool sendEmailNotification(String subject, String body) {
 		return false;
 	}
 
-	if (!wifiConnected) {
+	// Email works over either WiFi or mobile data
+	if (!wifiConnected && !mobileDataConnected) {
 		return false;
 	}
 

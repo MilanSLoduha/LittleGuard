@@ -29,6 +29,7 @@ const char *broker_username = MQTT_USER;
 const char *broker_password = MQTT_PASSWORD;
 const char *client_id = "T-SIMCAM-LTE";
 bool stream = false;
+bool pendingGetSettingsResponse = false;
 
 static CameraSettings makeDefaultSettings() {
 	CameraSettings cfg;
@@ -424,17 +425,21 @@ void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len) {
 			}
 		} else if (strcmp(type, "get_settings") == 0) {
 			refreshSettingsFromSensor(currentSettings);
-			publishSettingsState();
+			if (mobileDataConnected) {
+				pendingGetSettingsResponse = true;
+			} else {
+				publishSettingsState();
 
-			int pirState = mcp.digitalRead(MCP_PIR_PIN);
-			publishMQTT(motionTopic, String(pirState));
+				int pirState = mcp.digitalRead(MCP_PIR_PIN);
+				publishMQTT(motionTopic, String(pirState));
 
-			if (lastMotionTime.length() > 0) {
-				publishMQTT(lastMotionTopic, lastMotionTime);
-			}
+				if (lastMotionTime.length() > 0) {
+					publishMQTT(lastMotionTopic, lastMotionTime);
+				}
 
-			if (lastSensorData.length() > 0) {
-				publishMQTT(temperatureTopic, lastSensorData);
+				if (lastSensorData.length() > 0) {
+					publishMQTT(temperatureTopic, lastSensorData);
+				}
 			}
 		} else {
 			Serial.println("Unknown command type: " + String(type));
@@ -541,8 +546,6 @@ bool publishMQTT(String topic, String message) {
 bool postFrame() {
 	if (!cameraReady || (!wifiConnected && !mobileDataConnected)) return false;
 
-	esp_task_wdt_reset();
-
 	camera_fb_t *fb = captureFrame();
 	if (!fb) {
 		return false;
@@ -552,19 +555,13 @@ bool postFrame() {
 
 	String encoded = base64::encode(fb->buf, fb->len);
 
-
-	esp_task_wdt_reset(); // Reset before string building
-
 	String payload = "{\"name\":\"frame\",\"data\":\"";
 	payload += encoded;
 	payload += "\"}";
 
-	esp_task_wdt_reset(); 
-
 	//Serial.printf("Payload: %d bytes\n", payload.length());
 
 	esp_camera_fb_return(fb);
-	esp_task_wdt_reset(); // Reset watchdog before HTTP
 
 	String url = "https://" + String(ABLY_HOST) + "/channels/" + ablyChannelName + "/messages";
 
@@ -577,9 +574,7 @@ bool postFrame() {
 		http.addHeader("Authorization", "Basic " + String(ABLY_AUTH_BASIC));
 		http.setTimeout(8000);
 
-		esp_task_wdt_reset();
 		int httpResponseCode = http.POST(payload);
-		esp_task_wdt_reset();
 		if (httpResponseCode != 200 && httpResponseCode != 201) {
 			Serial.print("Ably POST failed, HTTP response code: ");
 			Serial.println(httpResponseCode);
@@ -650,7 +645,6 @@ bool postFrame() {
 			modem.stream.write((const uint8_t*)(payload.c_str() + sent), toSend);
 			sent += toSend;
 			delay(10);
-			esp_task_wdt_reset();
 		}
 		
 		if (modem.waitResponse(5000) != 1) {
@@ -661,14 +655,12 @@ bool postFrame() {
 		}
 
 		modem.sendAT("+HTTPACTION=1");
-		esp_task_wdt_reset();
 		if (modem.waitResponse(30000, "+HTTPACTION:") != 1) {
 			Serial.println("HTTP action failed");
 			modem.sendAT("+HTTPTERM");
 			modem.waitResponse();
 			break;
 		}
-		esp_task_wdt_reset();
 
 		String response = modem.stream.readStringUntil('\n');
 		int c1 = response.indexOf(',');

@@ -19,6 +19,7 @@ extern SemaphoreHandle_t modemMutex;
 extern QueueHandle_t snapshotRequestQueue;
 extern QueueHandle_t notificationQueue;
 extern QueueHandle_t motorCommandQueue;
+extern QueueHandle_t mqttPublishQueue;
 
 // Task handles
 extern TaskHandle_t networkTaskHandle;

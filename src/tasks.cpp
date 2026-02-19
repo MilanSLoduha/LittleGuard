@@ -10,11 +10,13 @@
 #include <WiFiClientSecure.h>
 
 extern QueueHandle_t motorCommandQueue;
+extern QueueHandle_t mqttPublishQueue;
 extern WiFiClientSecure espClient;
 extern PubSubClient client;
 extern bool wifiConnected;
 extern bool mobileDataConnected;
 extern bool stream;
+extern bool pendingGetSettingsResponse;
 extern long long lastFrame;
 extern bool mcpReady;
 extern Adafruit_MCP23X17 mcp;
@@ -79,17 +81,42 @@ static void notificationSendTask(void *param) {
 	vTaskDelete(NULL);
 }
 
-void networkTask(void *parameter) {
-	esp_task_wdt_add(NULL);
+static void mqttPublishTask(void *param) {
+	MQTTPublishMessage msg;
+	
+	while (true) {
+		// Block until message arrives, no timeout
+		if (xQueueReceive(mqttPublishQueue, &msg, portMAX_DELAY) == pdTRUE) {
+			Serial.printf("MQTT Publish Task: Publishing to %s\n", msg.topic);
+			bool success = publishMQTT(String(msg.topic), String(msg.message));
+			if (!success) {
+				Serial.printf("MQTT Publish Task: Failed to publish to %s\n", msg.topic);
+			}
+			vTaskDelay(pdMS_TO_TICKS(50));
+		}
+	}
+}
 
+void initializeMQTTPublishTask() {
+	xTaskCreatePinnedToCore(
+		mqttPublishTask,
+		"MQTTPublish",
+		8192,
+		NULL,
+		1,
+		NULL,
+		1 
+	);
+	Serial.println("MQTT Publish Task initialized on Core 1");
+}
+
+void networkTask(void *parameter) {
 	unsigned long lastMqttCheck = 0;
 	const unsigned long MQTT_CHECK_INTERVAL = 100;
 	unsigned long lastMqttPublish = 0;
 	const unsigned long MQTT_PUBLISH_INTERVAL = 5 * 60 * 1000;
 
 	for (;;) {
-		esp_task_wdt_reset();
-
 		if (millis() - lastMqttCheck >= MQTT_CHECK_INTERVAL) {
 			if (wifiConnected && client.connected()) {
 				client.loop();
@@ -105,15 +132,49 @@ void networkTask(void *parameter) {
 
 		if (millis() - lastMqttPublish >= MQTT_PUBLISH_INTERVAL) {
 			if (!lastMotionTime.isEmpty()) {
-				publishMQTT(lastMotionTopic, lastMotionTime);
+				MQTTPublishMessage msg;
+				strncpy(msg.topic, lastMotionTopic.c_str(), sizeof(msg.topic) - 1);
+				strncpy(msg.message, lastMotionTime.c_str(), sizeof(msg.message) - 1);
+				xQueueSend(mqttPublishQueue, &msg, 0);
 			}
 			if (!lastSensorData.isEmpty()) {
-				publishMQTT(temperatureTopic, lastSensorData);
+				MQTTPublishMessage msg;
+				strncpy(msg.topic, temperatureTopic.c_str(), sizeof(msg.topic) - 1);
+				strncpy(msg.message, lastSensorData.c_str(), sizeof(msg.message) - 1);
+				xQueueSend(mqttPublishQueue, &msg, 0);
 			}
 			if (lastMotionStatus >= 0) {
-				publishMQTT(motionTopic, String(lastMotionStatus));
+				MQTTPublishMessage msg;
+				strncpy(msg.topic, motionTopic.c_str(), sizeof(msg.topic) - 1);
+				String statusStr = String(lastMotionStatus);
+				strncpy(msg.message, statusStr.c_str(), sizeof(msg.message) - 1);
+				xQueueSend(mqttPublishQueue, &msg, 0);
 			}
 			lastMqttPublish = millis();
+		}
+
+		if (pendingGetSettingsResponse && mobileDataConnected) {
+		publishSettingsState();
+			// Queue motion status publish
+			MQTTPublishMessage msg1;
+			strncpy(msg1.topic, motionTopic.c_str(), sizeof(msg1.topic) - 1);
+			String motionStr = String(mcp.digitalRead(MCP_PIR_PIN));
+			strncpy(msg1.message, motionStr.c_str(), sizeof(msg1.message) - 1);
+			xQueueSend(mqttPublishQueue, &msg1, 0);
+			
+			if (!lastMotionTime.isEmpty()) {
+				MQTTPublishMessage msg2;
+				strncpy(msg2.topic, lastMotionTopic.c_str(), sizeof(msg2.topic) - 1);
+				strncpy(msg2.message, lastMotionTime.c_str(), sizeof(msg2.message) - 1);
+				xQueueSend(mqttPublishQueue, &msg2, 0);
+			}
+			if (!lastSensorData.isEmpty()) {
+				MQTTPublishMessage msg3;
+				strncpy(msg3.topic, temperatureTopic.c_str(), sizeof(msg3.topic) - 1);
+				strncpy(msg3.message, lastSensorData.c_str(), sizeof(msg3.message) - 1);
+				xQueueSend(mqttPublishQueue, &msg3, 0);
+			}
+			pendingGetSettingsResponse = false;
 		}
 
 		NotificationMessage notif;
@@ -143,14 +204,21 @@ void networkTask(void *parameter) {
 }
 
 void streamTask(void *parameter) {
-	esp_task_wdt_add(NULL);
-
 	const unsigned long STREAM_INTERVAL_MS = 100;
 
 	for (;;) {
-		esp_task_wdt_reset();
 
-		if (stream && (millis() - lastFrame) >= STREAM_INTERVAL_MS) {
+		if (stream && mobileDataConnected) {
+			if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
+				if (postFrame()) {
+					lastFrame = millis();
+				} else {
+					Serial.println("Failed to send LTE snapshot");
+				}
+				xSemaphoreGive(cameraMutex);
+			}
+			stream = false;
+		} else if (stream && (millis() - lastFrame) >= STREAM_INTERVAL_MS) {
 			if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(150)) == pdTRUE) {
 				if (postFrame()) {
 					lastFrame = millis();
@@ -166,21 +234,34 @@ void streamTask(void *parameter) {
 }
 
 void sensorTask(void *parameter) {
-	esp_task_wdt_add(NULL);
-
 	unsigned long lastPirCheck = 0;
 	const unsigned long PIR_CHECK_INTERVAL = 1000;
+	unsigned long lastTimeWentLow = 0;  // Track when PIR last went LOW
+	const unsigned long MIN_LOW_DURATION = 60000;  // PIR must be LOW for 60 seconds before accepting new motion
 
 	for (;;) {
-		esp_task_wdt_reset();
 
 		if (mcpReady && (millis() - lastPirCheck >= PIR_CHECK_INTERVAL)) {
 			if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
 				int pirState = mcp.digitalRead(MCP_PIR_PIN);
 				xSemaphoreGive(i2cMutex);
 
+				// Debug: Log PIR state changes
 				if (lastMotionStatus != pirState) {
-					if (pirState == HIGH) {
+					Serial.printf("DEBUG: PIR state change: %d -> %d\n", lastMotionStatus, pirState);
+				}
+
+				// Track when PIR goes LOW
+				if (pirState == LOW && lastMotionStatus == HIGH) {
+					lastTimeWentLow = millis();
+					Serial.printf("DEBUG: PIR went LOW, starting cooldown timer\n");
+				}
+
+				if (lastMotionStatus != pirState && pirState == HIGH && lastMotionStatus == LOW) {
+					unsigned long lowDuration = millis() - lastTimeWentLow;
+					if (lowDuration >= MIN_LOW_DURATION) {
+						Serial.printf("DEBUG: Valid motion detection (was LOW for %lu ms)\n", lowDuration);
+						
 						if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
 							DateTime now = rtc.now();
 							Serial.printf("Motion HIGH at %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
@@ -188,11 +269,12 @@ void sensorTask(void *parameter) {
 						} else {
 							Serial.println("Motion HIGH (no RTC)");
 						}
+						
 						bool windowOk = isNotificationAllowed();
 						if (!windowOk) {
 							lastMotionStatus = pirState;
 							lastPirCheck = millis();
-							continue; // outside allowed window, skip actions
+							continue;
 						}
 
 						if (currentSettings.mode == "mode1" && !recordingInProgress) {
@@ -239,39 +321,44 @@ void sensorTask(void *parameter) {
 						}
 
 						if (canSendNotification && windowOk) {
-						Serial.println("Sending notification (time window OK, threshold passed)");
-						NotificationMessage notif;
-						memset(&notif, 0, sizeof(NotificationMessage));
+							Serial.println("Sending notification (time window OK, threshold passed)");
+							NotificationMessage notif;
+							memset(&notif, 0, sizeof(NotificationMessage));
 
-						if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
-							strncpy(notif.emailSubject, "LittleGuard - Detekcia pohybu", 63);
-							strncpy(notif.emailBody, "Pohyb bol detekovaný na vašom zariadení LittleGuard.", 127);
-							notif.sendEmail = true;
-						}
+							if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
+								strncpy(notif.emailSubject, "LittleGuard - Detekcia pohybu", 63);
+								strncpy(notif.emailBody, "Pohyb bol detekovaný na vašom zariadení LittleGuard.", 127);
+								notif.sendEmail = true;
+							}
 
-						if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
-							strncpy(notif.smsText, "LittleGuard: Pohyb detekovaný!", 127);
-							notif.sendSMS = true;
-						}
+							if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
+								strncpy(notif.smsText, "LittleGuard: Pohyb detekovany!", 127);
+								notif.sendSMS = true;
+							}
 
-						if (xQueueSend(notificationQueue, &notif, 0) == pdTRUE) {
-							lastNotificationTime = currentTime;
-							Serial.println("Notification queued successfully");
+							if (xQueueSend(notificationQueue, &notif, 0) == pdTRUE) {
+								lastNotificationTime = currentTime;
+								Serial.println("Notification queued successfully");
+							} else {
+								Serial.println("Failed to queue notification");
+							}
 						} else {
-							Serial.println("Failed to queue notification");
+							if (!canSendNotification) {
+								Serial.printf("Notification skipped: too soon (%.1f min since last)\n", 
+									(float)(currentTime - lastNotificationTime) / 60000.0f);
+							}
+							if (!windowOk) {
+								Serial.println("Notification skipped: outside time window");
+							}
 						}
 					} else {
-						if (!canSendNotification) {
-							Serial.printf("Notification skipped: too soon (%.1f min since last)\n", 
-								(float)(currentTime - lastNotificationTime) / 60000.0f);
-						}
-						if (!windowOk) {
-							Serial.println("Notification skipped: outside time window");
-						}
+						// PIR went HIGH too quickly after going LOW - likely retriggering cycle
+						Serial.printf("DEBUG: Ignoring PIR retrigger (was LOW for only %lu ms, need %lu ms)\n", 
+							lowDuration, MIN_LOW_DURATION);
 					}
-					} else {
-						Serial.println("Žiadny pohyb.");
-					}
+					
+					lastMotionStatus = pirState;
+				} else if (lastMotionStatus != pirState) {
 					lastMotionStatus = pirState;
 				}
 

@@ -19,6 +19,7 @@ SemaphoreHandle_t modemMutex = NULL;
 QueueHandle_t snapshotRequestQueue = NULL;
 QueueHandle_t notificationQueue = NULL;
 QueueHandle_t motorCommandQueue = NULL;
+QueueHandle_t mqttPublishQueue = NULL;
 
 TaskHandle_t networkTaskHandle = NULL;
 TaskHandle_t sensorTaskHandle = NULL;
@@ -51,6 +52,10 @@ void initSharedResources() {
 
 	if (motorCommandQueue == NULL) {
 		motorCommandQueue = xQueueCreate(5, sizeof(MotorCommand));
+	}
+
+	if (mqttPublishQueue == NULL) {
+		mqttPublishQueue = xQueueCreate(20, sizeof(MQTTPublishMessage));
 	}
 }
 
@@ -196,7 +201,6 @@ void setMotorAngle(int angleX, int angleY) {
 
 	if (currentXMotorAngle > angleX) {
 		for (int j = 0; j < steps; j++) {
-			if (j % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1X, HIGH);
 			mcp.digitalWrite(OUTPUT2X, LOW);
 			mcp.digitalWrite(OUTPUT3X, LOW);
@@ -220,7 +224,6 @@ void setMotorAngle(int angleX, int angleY) {
 		}
 	} else {
 		for (int i = 0; i < steps; i++) {
-			if (i % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1X, HIGH);
 			mcp.digitalWrite(OUTPUT2X, HIGH);
 			mcp.digitalWrite(OUTPUT3X, LOW);
@@ -250,7 +253,6 @@ void setMotorAngle(int angleX, int angleY) {
 	// 512 == 360 degrees
 	if (currentYMotorAngle > angleY) {
 		for (int j = 0; j < steps; j++) {
-			if (j % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1Y, HIGH);
 			mcp.digitalWrite(OUTPUT2Y, LOW);
 			mcp.digitalWrite(OUTPUT3Y, LOW);
@@ -274,7 +276,6 @@ void setMotorAngle(int angleX, int angleY) {
 		}
 	} else {
 		for (int i = 0; i < steps; i++) {
-			if (i % 100 == 0) esp_task_wdt_reset();
 			mcp.digitalWrite(OUTPUT1Y, HIGH);
 			mcp.digitalWrite(OUTPUT2Y, HIGH);
 			mcp.digitalWrite(OUTPUT3Y, LOW);
