@@ -113,8 +113,8 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 	String sent_via = "none";
 	String message = "";
 
-	// Získaj MAC adresu zariadenia
-	String macStr = getDeviceMacPretty();
+	// Získaj MAC adresu zariadenia (normalizovaný formát bez dvojbodiek)
+	String macStr = getDeviceMac();
 
 	if (wifiConnected && pairing.length() > 0) {
 		pendingPairingCode = pairing;
@@ -198,12 +198,16 @@ void processPairingRequest() {
 	if (wifiConnected) {
 		WiFiClientSecure *client = new WiFiClientSecure;
 		if (client) {
-			client->setCACert(HivemqRootCA);
+			// API_URL je Vercel endpoint, nie HiveMQ host. HiveMQ CA cert tu spôsoboval TLS zlyhania.
+			client->setInsecure();
 
 			HTTPClient https;
 			https.begin(*client, API_URL);
 			https.addHeader("Content-Type", "application/json");
 			https.setTimeout(10000);
+			Serial.println("Submitting pairing request over HTTPS...");
+			Serial.println("API URL: " + String(API_URL));
+			Serial.println("Payload: " + jsonPayload);
 
 			int httpCode = https.POST(jsonPayload);
 
