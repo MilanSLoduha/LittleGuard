@@ -97,6 +97,20 @@ static void mqttPublishTask(void *param) {
 	}
 }
 
+static bool queueMqttPublish(const String &topic, const String &message, TickType_t waitTicks) {
+	if (mqttPublishQueue == NULL) {
+		return false;
+	}
+
+	MQTTPublishMessage msg = {};
+	strncpy(msg.topic, topic.c_str(), sizeof(msg.topic) - 1);
+	msg.topic[sizeof(msg.topic) - 1] = '\0';
+	strncpy(msg.message, message.c_str(), sizeof(msg.message) - 1);
+	msg.message[sizeof(msg.message) - 1] = '\0';
+
+	return xQueueSend(mqttPublishQueue, &msg, waitTicks) == pdTRUE;
+}
+
 void initializeMQTTPublishTask() {
 	xTaskCreatePinnedToCore(
 		mqttPublishTask,
@@ -236,8 +250,6 @@ void streamTask(void *parameter) {
 void sensorTask(void *parameter) {
 	unsigned long lastPirCheck = 0;
 	const unsigned long PIR_CHECK_INTERVAL = 1000;
-	unsigned long lastTimeWentLow = 0;  // Track when PIR last went LOW
-	const unsigned long MIN_LOW_DURATION = 60000;  // PIR must be LOW for 60 seconds before accepting new motion
 
 	for (;;) {
 
@@ -246,48 +258,37 @@ void sensorTask(void *parameter) {
 				int pirState = mcp.digitalRead(MCP_PIR_PIN);
 				xSemaphoreGive(i2cMutex);
 
-				// Debug: Log PIR state changes
 				if (lastMotionStatus != pirState) {
 					Serial.printf("DEBUG: PIR state change: %d -> %d\n", lastMotionStatus, pirState);
-				}
-
-				// Track when PIR goes LOW
-				if (pirState == LOW && lastMotionStatus == HIGH) {
-					lastTimeWentLow = millis();
-					Serial.printf("DEBUG: PIR went LOW, starting cooldown timer\n");
-				}
-
-				if (lastMotionStatus != pirState && pirState == HIGH && lastMotionStatus == LOW) {
-					unsigned long lowDuration = millis() - lastTimeWentLow;
-					if (lowDuration >= MIN_LOW_DURATION) {
-						Serial.printf("DEBUG: Valid motion detection (was LOW for %lu ms)\n", lowDuration);
-						
-						if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-							DateTime now = rtc.now();
-							Serial.printf("Motion HIGH at %02d:%02d:%02d\n", now.hour(), now.minute(), now.second());
-							xSemaphoreGive(i2cMutex);
-						} else {
-							Serial.println("Motion HIGH (no RTC)");
+					
+					// Vzdy odosli MQTT pri zmene stavu
+					String motionPayload = String(pirState);
+					bool motionPublished = false;
+					for (uint8_t attempt = 0; attempt < 3 && !motionPublished; ++attempt) {
+						motionPublished = publishMQTT(motionTopic, motionPayload);
+						if (!motionPublished) {
+							vTaskDelay(pdMS_TO_TICKS(50));
 						}
-						
-						bool windowOk = isNotificationAllowed();
-						if (!windowOk) {
-							lastMotionStatus = pirState;
-							lastPirCheck = millis();
-							continue;
-						}
+					}
+					if (!motionPublished) {
+						Serial.println("Failed to publish motion MQTT status change");
+					}
 
+					if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+						DateTime now = rtc.now();
+						Serial.printf("Motion state changed to %d at %02d:%02d:%02d\n", pirState, now.hour(), now.minute(), now.second());
+						lastMotionTime = stringTime(now);
+						xSemaphoreGive(i2cMutex);
+					}
+
+					bool windowOk = isNotificationAllowed();
+					
+					if (windowOk && pirState == HIGH) {
+						// Na nahravanie fotky/videa reaguj iba v pripade pohybu HIGH
 						if (currentSettings.mode == "mode1" && !recordingInProgress) {
 							recordingInProgress = true;
 							uint32_t *durationMs = new uint32_t(10000);
-							BaseType_t created = xTaskCreatePinnedToCore(
-							    motionRecordingTask,
-							    "motionRecording",
-							    8192,
-							    durationMs,
-							    1,
-							    NULL,
-							    1);
+							BaseType_t created = xTaskCreatePinnedToCore(motionRecordingTask, "motionRecording", 8192, durationMs, 1, NULL, 1);
 							if (created != pdPASS) {
 								recordingInProgress = false;
 								delete durationMs;
@@ -307,58 +308,46 @@ void sensorTask(void *parameter) {
 								}
 								xSemaphoreGive(cameraMutex);
 							}
-						} else {
-							// mode3 (or other): do nothing on motion
+						}
+					}
+
+					uint32_t currentTime = millis();
+					bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
+
+					if (canSendNotification && windowOk) {
+						Serial.println("Sending notification (time window OK, threshold passed)");
+						NotificationMessage notif;
+						memset(&notif, 0, sizeof(NotificationMessage));
+
+						if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
+							strncpy(notif.emailSubject, "LittleGuard - Zmena stavu senzora", 63);
+							String body = String("Stav PIR senzora sa zmenil na: ") + (pirState == HIGH ? "HIGH (Pohyb)" : "LOW (Klid)");
+							strncpy(notif.emailBody, body.c_str(), 127);
+							notif.sendEmail = true;
 						}
 
-						uint32_t currentTime = millis();
-						bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
-
-						if (rtcReady && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-							DateTime now = rtc.now();
-							lastMotionTime = stringTime(now);
-							xSemaphoreGive(i2cMutex);
+						if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
+							String smsText = String("LittleGuard: Senzor zmeneny na ") + (pirState == HIGH ? "HIGH" : "LOW");
+							strncpy(notif.smsText, smsText.c_str(), 127);
+							notif.sendSMS = true;
 						}
 
-						if (canSendNotification && windowOk) {
-							Serial.println("Sending notification (time window OK, threshold passed)");
-							NotificationMessage notif;
-							memset(&notif, 0, sizeof(NotificationMessage));
-
-							if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
-								strncpy(notif.emailSubject, "LittleGuard - Detekcia pohybu", 63);
-								strncpy(notif.emailBody, "Pohyb bol detekovaný na vašom zariadení LittleGuard.", 127);
-								notif.sendEmail = true;
-							}
-
-							if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
-								strncpy(notif.smsText, "LittleGuard: Pohyb detekovany!", 127);
-								notif.sendSMS = true;
-							}
-
-							if (xQueueSend(notificationQueue, &notif, 0) == pdTRUE) {
-								lastNotificationTime = currentTime;
-								Serial.println("Notification queued successfully");
-							} else {
-								Serial.println("Failed to queue notification");
-							}
+						if (xQueueSend(notificationQueue, &notif, 0) == pdTRUE) {
+							lastNotificationTime = currentTime;
+							Serial.println("Notification queued successfully");
 						} else {
-							if (!canSendNotification) {
-								Serial.printf("Notification skipped: too soon (%.1f min since last)\n", 
-									(float)(currentTime - lastNotificationTime) / 60000.0f);
-							}
-							if (!windowOk) {
-								Serial.println("Notification skipped: outside time window");
-							}
+							Serial.println("Failed to queue notification");
 						}
 					} else {
-						// PIR went HIGH too quickly after going LOW - likely retriggering cycle
-						Serial.printf("DEBUG: Ignoring PIR retrigger (was LOW for only %lu ms, need %lu ms)\n", 
-							lowDuration, MIN_LOW_DURATION);
+						if (!canSendNotification) {
+							Serial.printf("Notification skipped: too soon (%.1f min since last)\n", 
+								(float)(currentTime - lastNotificationTime) / 60000.0f);
+						}
+						if (!windowOk) {
+							Serial.println("Notification skipped: outside time window");
+						}
 					}
-					
-					lastMotionStatus = pirState;
-				} else if (lastMotionStatus != pirState) {
+
 					lastMotionStatus = pirState;
 				}
 
