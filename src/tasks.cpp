@@ -6,6 +6,7 @@
 #include "modem.h"
 #include "mqtt_server.h"
 #include "sd_storage.h"
+#include "topics.h"
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 
@@ -313,22 +314,22 @@ void sensorTask(void *parameter) {
 
 					uint32_t currentTime = millis();
 					bool canSendNotification = (currentTime - lastNotificationTime) >= NOTIFICATION_THRESHOLD_MS;
+					bool motionDetected = (pirState == HIGH);
 
-					if (canSendNotification && windowOk) {
+					if (canSendNotification && windowOk && motionDetected) {
 						Serial.println("Sending notification (time window OK, threshold passed)");
 						NotificationMessage notif;
 						memset(&notif, 0, sizeof(NotificationMessage));
+						String motionMessage = String("Na vasej kamere LittleGuard ") + getTopicMac() + " bol zaznamenany pohyb";
 
 						if (currentSettings.sendEmail && currentSettings.emailAddress.length() > 0) {
 							strncpy(notif.emailSubject, "LittleGuard - Zmena stavu senzora", 63);
-							String body = String("Stav PIR senzora sa zmenil na: ") + (pirState == HIGH ? "HIGH (Pohyb)" : "LOW (Klid)");
-							strncpy(notif.emailBody, body.c_str(), 127);
+							strncpy(notif.emailBody, motionMessage.c_str(), 127);
 							notif.sendEmail = true;
 						}
 
 						if (currentSettings.sendSMS && currentSettings.phoneNumber.length() > 0) {
-							String smsText = String("LittleGuard: Senzor zmeneny na ") + (pirState == HIGH ? "HIGH" : "LOW");
-							strncpy(notif.smsText, smsText.c_str(), 127);
+							strncpy(notif.smsText, motionMessage.c_str(), 127);
 							notif.sendSMS = true;
 						}
 
@@ -345,6 +346,9 @@ void sensorTask(void *parameter) {
 						}
 						if (!windowOk) {
 							Serial.println("Notification skipped: outside time window");
+						}
+						if (!motionDetected) {
+							Serial.println("Notification skipped: PIR is LOW");
 						}
 					}
 
