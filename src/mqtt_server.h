@@ -47,6 +47,7 @@ extern const char *client_id;
 extern const uint8_t mqtt_client_id;
 
 extern bool stream;
+extern bool pendingGetSettingsResponse;
 
 bool mqtt_connect_manualLTE();
 void mqtt_callback(const char *topic, const uint8_t *payload, uint32_t len);

@@ -219,6 +219,9 @@ void setup() {
 		initCameraSettings();
 		// bme680Ready = false; // sddddddddddddddddddddddddddddddd
 
+		// Initialize MQTT publish task on Core 1 first to handle blocking operations
+		initializeMQTTPublishTask();
+
 		xTaskCreatePinnedToCore(networkTask,        
 		                        "NetworkTask",      
 		                        8192,               
