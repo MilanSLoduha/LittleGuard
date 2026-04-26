@@ -6,7 +6,7 @@
 
 ### Čo dostanete pri kúpe:
 - Hotový funkčný výrobok
-- Úplný zdrojový kód (firmware, webové rozhranie, notifikácie)
+- Úplný zdrojový kód (firmware, webové rozhranie)
 - Upraviteľné 3D modely a mechanické časti
 
 ### Licenčné podmienky:
